@@ -1,0 +1,32 @@
+[Unit]
+Description=Orbit crypto snapshot builder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=orbit
+Group=orbit
+EnvironmentFile=-/etc/orbit/orbit.env
+ExecStart=/usr/bin/python3 /opt/orbit/build_snapshot.py
+# only writable path:
+ReadWritePaths=/var/lib/orbit
+UMask=0022
+
+# --- hardening (zen baseline) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
