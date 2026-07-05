@@ -7,12 +7,96 @@ const state={tf:'24h',metric:'perf',filter:'all',lens:'perf',demo:false,universe
 
 // --- favorites: capped, persisted client-side (localStorage). No account, no server. ---
 const MAX_FAV=50, TOP_N=100, FAV_KEY='orbit.favs.v1';
+const MAX_COINS=1000, MAX_QUERY=80, MAX_SPARK=240;
+const SAFE_ID_RE=/^[a-z0-9][a-z0-9._-]{0,79}$/i;
+const SAFE_SYMBOL_RE=/^[a-z0-9][a-z0-9._-]{0,19}$/i;
+function safeText(v,max){
+  const s=String(v==null?'':v).replace(/[\u0000-\u001f\u007f]/g,'').trim();
+  return s?s.slice(0,max):'';
+}
+function safeQuery(v){return safeText(v,MAX_QUERY).toLowerCase();}
+function safeNum(v,lo=-Infinity,hi=Infinity){
+  const n=Number(v);
+  return Number.isFinite(n)&&n>=lo&&n<=hi?n:null;
+}
+function normalizeStatus(s){
+  if(!s||typeof s!=='object')return null;
+  const out={};
+  for(const k of ['coingecko_markets','coingecko_global','lunarcrush','fred','logos']){
+    const v=s[k];
+    if(v&&typeof v==='object')out[k]={ok:v.ok===true,enabled:v.enabled===true,reused:v.reused===true};
+  }
+  return out;
+}
+function normalizeGlobal(g){
+  if(!g||typeof g!=='object')return null;
+  const cap=safeNum(g.total_market_cap&&g.total_market_cap.usd,0);
+  const btc=safeNum(g.market_cap_percentage&&g.market_cap_percentage.btc,0,100);
+  const eth=safeNum(g.market_cap_percentage&&g.market_cap_percentage.eth,0,100);
+  const chg=safeNum(g.market_cap_change_percentage_24h_usd,-100,100);
+  return {
+    total_market_cap:{usd:cap==null?0:cap},
+    market_cap_percentage:{btc:btc==null?null:btc,eth:eth==null?null:eth},
+    market_cap_change_percentage_24h_usd:chg==null?0:chg
+  };
+}
+function normalizeMacro(m){
+  if(!m||typeof m!=='object')return null;
+  const out={};
+  for(const k of ['us10y','usd']){
+    const v=m[k];
+    if(!v||typeof v!=='object')continue;
+    const value=safeNum(v.value,-100000,100000);
+    if(value==null)continue;
+    const change=safeNum(v.change,-100000,100000);
+    out[k]={value,change:change==null?null:change,date:safeText(v.date,16)};
+  }
+  if(!out.us10y&&!out.usd)return null;
+  out.asof=safeText(m.asof,16);
+  return out;
+}
+function normalizeCoin(c){
+  if(!c||typeof c!=='object')return null;
+  const id=safeText(c.id,80),symbol=safeText(c.symbol,20).toLowerCase(),name=safeText(c.name,96);
+  if(!SAFE_ID_RE.test(id)||!SAFE_SYMBOL_RE.test(symbol)||!name)return null;
+  const price=safeNum(c.current_price,0),cap=safeNum(c.market_cap,0),vol=safeNum(c.total_volume,0);
+  if(price==null||cap==null||vol==null)return null;
+  const o={id,symbol,name,current_price:price,market_cap:cap,total_volume:vol,has_logo:c.has_logo===true};
+  const rank=safeNum(c.market_cap_rank,1,1000000); if(rank!=null)o.market_cap_rank=Math.floor(rank);
+  for(const k of ['ath','circulating_supply']){const n=safeNum(c[k],0); if(n!=null)o[k]=n;}
+  for(const k of Object.values(TF)){const n=safeNum(c[k],-1000,100000); o[k]=n==null?null:n;}
+  for(const k of ['galaxy_score','sentiment','social_dominance']){
+    const n=safeNum(c[k],k==='sentiment'?-100:0,100);
+    if(n!=null)o[k]=n;
+  }
+  const src=safeText(c.social_source,40); if(src)o.social_source=src;
+  const spark=Array.isArray(c.spark)?c.spark.slice(0,MAX_SPARK).map(x=>safeNum(x,0)).filter(x=>x!=null):null;
+  if(spark&&spark.length>=2)o.spark=spark;
+  return o;
+}
+function normalizeSnapshot(d){
+  if(!d||typeof d!=='object'||!Array.isArray(d.coins))return null;
+  const seen=new Set(),coins=[];
+  for(const raw of d.coins.slice(0,MAX_COINS)){
+    const c=normalizeCoin(raw);
+    if(!c||seen.has(c.id))continue;
+    seen.add(c.id);coins.push(c);
+  }
+  if(!coins.length)return null;
+  return {
+    coins,
+    global:normalizeGlobal(d.global),
+    macro:normalizeMacro(d.macro),
+    snapshot:safeText(d.snapshot,32),
+    status:normalizeStatus(d.status)
+  };
+}
 function loadFavs(){
   try{
     const raw=localStorage.getItem(FAV_KEY); if(!raw)return [];
     const a=JSON.parse(raw); if(!Array.isArray(a))return [];
     // defensive: ids only, sane charset/length, hard cap
-    return a.filter(x=>typeof x==='string'&&/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(x)).slice(0,MAX_FAV);
+    return a.filter(x=>typeof x==='string'&&SAFE_ID_RE.test(x)).slice(0,MAX_FAV);
   }catch(e){return [];}
 }
 function saveFavs(){
@@ -25,6 +109,7 @@ function updateFavUI(){
   const fc=document.getElementById('favCount'); if(fc)fc.textContent=n;
 }
 function toggleFav(id){
+  if(typeof id!=='string'||!SAFE_ID_RE.test(id))return false;
   if(state.selected.has(id)){state.selected.delete(id);}
   else{ if(favFull()){showToast(`Maximum ${MAX_FAV} favorites`);return false;} state.selected.add(id); }
   saveFavs(); updateFavUI(); return true;
@@ -103,9 +188,8 @@ function socialScore(c){
 async function getJSON(url){const r=await fetch(url,{headers:{accept:'application/json'},cache:'default'});if(!r.ok)throw new Error('http '+r.status);return r.json();}
 async function loadData(first){
   try{
-    const d=await getJSON(DATA_URL);
-    if(!d||!Array.isArray(d.coins)||!d.coins.length)throw new Error('empty');
-    d.coins.forEach(c=>{ if(c.spark)c._spark=c.spark; });
+    const d=normalizeSnapshot(await getJSON(DATA_URL));
+    if(!d)throw new Error('empty');
     state.universe=d.coins; state.byId=new Map(d.coins.map(c=>[c.id,c]));
     state.global=d.global||null;
     state.macroLive=(d.macro&&d.macro.us10y)?d.macro:null;
@@ -377,14 +461,14 @@ async function openSheet(c){
   sheet.querySelector('#divLine').style.color=divCol;
   sheet.querySelector('#anomLine').style.color=an?'#fff':'var(--ink-dim)';
   scrim.classList.add('show');sheet.classList.add('show');
-  document.getElementById('starBtn').onclick=()=>{toggleSel(c.id);document.getElementById('starBtn').classList.toggle('on',state.selected.has(c.id));};
+  document.getElementById('starBtn').addEventListener('click',()=>{toggleSel(c.id);document.getElementById('starBtn').classList.toggle('on',state.selected.has(c.id));});
   drawSpark(c);
 }
 function closeSheet(){scrim.classList.remove('show');sheet.classList.remove('show');}
 scrim.addEventListener('click',closeSheet);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeSheet();picker.classList.remove('show');search.classList.remove('show');}});
 function drawSpark(c){const cnv=document.getElementById('spark');if(!cnv)return;
-  const sp=c._spark||(c.sparkline_in_7d&&c.sparkline_in_7d.price);if(!sp||sp.length<2)return;
+  const sp=c.spark;if(!sp||sp.length<2)return;
   const dpr=Math.min(window.devicePixelRatio||1,2),w=cnv.clientWidth,h=64;cnv.width=w*dpr;cnv.height=h*dpr;
   const x=cnv.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);
   const mn=Math.min(...sp),mx=Math.max(...sp),rg=mx-mn||1,up=sp[sp.length-1]>=sp[0];
@@ -439,7 +523,7 @@ function renderPager(pages){
 }
 
 function renderPick(q){
-  q=q.trim().toLowerCase();
+  q=safeQuery(q);
   const favOnly=state._favOnly;
   let base=favOnly?[...state.selected].map(id=>state.byId.get(id)).filter(Boolean):state.universe;
   let list,paged=false,pages=1;
@@ -483,7 +567,7 @@ document.getElementById('searchDone').addEventListener('click',()=>search.classL
 picker.addEventListener('click',e=>{if(e.target===picker){picker.classList.remove('show');layout();}});
 search.addEventListener('click',e=>{if(e.target===search)search.classList.remove('show');});
 searchInput.addEventListener('input',()=>renderSearch(searchInput.value));
-function renderSearch(q){q=q.trim().toLowerCase();
+function renderSearch(q){q=safeQuery(q);
   let list=[...state.selected].map(id=>state.byId.get(id)).filter(Boolean);
   if(q)list=list.filter(c=>c.name.toLowerCase().includes(q)||c.symbol.toLowerCase().includes(q));
   searchList.innerHTML=list.map(c=>{const pct=c[TF[state.tf]];
@@ -537,13 +621,13 @@ function renderStrip(){
     `<span>avg ${state.tf.toUpperCase()} <b class="${avgCls}">${fmtPct(avg)}</b></span>`+
     `<span class="signal-tip">cross-sectional signals</span>`;
   const dc=document.getElementById('divChip');
-  if(dc)dc.onclick=()=>{state.filter=state.filter==='div'?'all':'div';
+  if(dc)dc.addEventListener('click',()=>{state.filter=state.filter==='div'?'all':'div';
     chips.querySelectorAll('.chip[data-f]').forEach(x=>x.classList.toggle('on',x.dataset.f===state.filter));
-    layout();renderStrip();};
+    layout();renderStrip();});
   const ac=document.getElementById('anomChip');
-  if(ac)ac.onclick=()=>{state.filter=state.filter==='anom'?'all':'anom';
+  if(ac)ac.addEventListener('click',()=>{state.filter=state.filter==='anom'?'all':'anom';
     chips.querySelectorAll('.chip[data-f]').forEach(x=>x.classList.toggle('on',x.dataset.f===state.filter));
-    layout();renderStrip();};
+    layout();renderStrip();});
 }
 
 async function boot(){

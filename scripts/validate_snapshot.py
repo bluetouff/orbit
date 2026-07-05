@@ -11,13 +11,15 @@ REQUIRED_NUMS = ("current_price", "market_cap", "total_volume")
 OPTIONAL_NUMS = (
     "ath",
     "circulating_supply",
+    "galaxy_score",
+    "sentiment",
+    "social_dominance",
+)
+PCT_NUMS = (
     "price_change_percentage_1h_in_currency",
     "price_change_percentage_24h_in_currency",
     "price_change_percentage_7d_in_currency",
     "price_change_percentage_30d_in_currency",
-    "galaxy_score",
-    "sentiment",
-    "social_dominance",
 )
 
 
@@ -25,9 +27,55 @@ def is_num(v):
     return isinstance(v, (int, float)) and math.isfinite(v)
 
 
+def in_range(v, lo, hi):
+    return is_num(v) and lo <= v <= hi
+
+
+def clean_text(v, max_len):
+    return isinstance(v, str) and v.strip() and len(v) <= max_len and not any(ord(ch) < 32 or ord(ch) == 127 for ch in v)
+
+
 def fail(msg):
     print("snapshot invalid: " + msg, file=sys.stderr)
     return 1
+
+
+def validate_global(g):
+    if g is None:
+        return None
+    if not isinstance(g, dict):
+        return "global is not an object"
+    cap = ((g.get("total_market_cap") or {}).get("usd"))
+    if cap is not None and (not is_num(cap) or cap < 0):
+        return "global total_market_cap.usd is invalid"
+    pct = g.get("market_cap_percentage") or {}
+    for key in ("btc", "eth"):
+        if pct.get(key) is not None and not in_range(pct[key], 0, 100):
+            return f"global market_cap_percentage.{key} is invalid"
+    chg = g.get("market_cap_change_percentage_24h_usd")
+    if chg is not None and not in_range(chg, -100, 100):
+        return "global market_cap_change_percentage_24h_usd is invalid"
+    return None
+
+
+def validate_macro(m):
+    if m is None:
+        return None
+    if not isinstance(m, dict):
+        return "macro is not an object"
+    for key in ("us10y", "usd"):
+        item = m.get(key)
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            return f"macro {key} is not an object"
+        if not in_range(item.get("value"), -100000, 100000):
+            return f"macro {key}.value is invalid"
+        if item.get("change") is not None and not in_range(item["change"], -100000, 100000):
+            return f"macro {key}.change is invalid"
+        if item.get("date") is not None and not clean_text(item["date"], 16):
+            return f"macro {key}.date is invalid"
+    return None
 
 
 def main(path):
@@ -46,6 +94,12 @@ def main(path):
         return fail("coins must be a non-empty list")
     if d.get("count") != len(coins):
         return fail("count does not match coins length")
+    err = validate_global(d.get("global"))
+    if err:
+        return fail(err)
+    err = validate_macro(d.get("macro"))
+    if err:
+        return fail(err)
     seen = set()
     for i, c in enumerate(coins):
         if not isinstance(c, dict):
@@ -58,7 +112,7 @@ def main(path):
         seen.add(cid)
         if not isinstance(sym, str) or not SYMBOL_RE.match(sym):
             return fail(f"{cid} has invalid symbol")
-        if not isinstance(name, str) or not name.strip() or len(name) > 96:
+        if not clean_text(name, 96):
             return fail(f"{cid} has invalid name")
         for k in REQUIRED_NUMS:
             if not is_num(c.get(k)) or c[k] < 0:
@@ -66,6 +120,15 @@ def main(path):
         for k in OPTIONAL_NUMS:
             if c.get(k) is not None and not is_num(c.get(k)):
                 return fail(f"{cid} has invalid {k}")
+        for k in PCT_NUMS:
+            if c.get(k) is not None and not in_range(c.get(k), -1000, 100000):
+                return fail(f"{cid} has invalid {k}")
+        if c.get("galaxy_score") is not None and not in_range(c["galaxy_score"], 0, 100):
+            return fail(f"{cid} has invalid galaxy_score")
+        if c.get("sentiment") is not None and not in_range(c["sentiment"], -100, 100):
+            return fail(f"{cid} has invalid sentiment")
+        if c.get("social_dominance") is not None and not in_range(c["social_dominance"], 0, 100):
+            return fail(f"{cid} has invalid social_dominance")
         rank = c.get("market_cap_rank")
         if rank is not None and (not isinstance(rank, int) or rank < 1):
             return fail(f"{cid} has invalid market_cap_rank")
@@ -73,7 +136,7 @@ def main(path):
             return fail(f"{cid} has invalid has_logo")
         spark = c.get("spark")
         if spark is not None:
-            if not isinstance(spark, list) or len(spark) < 2 or any((not is_num(x) or x < 0) for x in spark):
+            if not isinstance(spark, list) or not 2 <= len(spark) <= 240 or any((not is_num(x) or x < 0) for x in spark):
                 return fail(f"{cid} has invalid spark")
     print(f"snapshot ok: {len(coins)} coins")
     return 0
