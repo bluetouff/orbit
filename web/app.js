@@ -61,7 +61,7 @@ function normalizeCoin(c){
   if(!SAFE_ID_RE.test(id)||!SAFE_SYMBOL_RE.test(symbol)||!name)return null;
   const price=safeNum(c.current_price,0),cap=safeNum(c.market_cap,0),vol=safeNum(c.total_volume,0);
   if(price==null||cap==null||vol==null)return null;
-  const o={id,symbol,name,current_price:price,market_cap:cap,total_volume:vol,has_logo:c.has_logo===true};
+  const o={id,symbol,name,current_price:price,market_cap:cap,total_volume:vol,has_logo:c.has_logo!==false};
   const rank=safeNum(c.market_cap_rank,1,1000000); if(rank!=null)o.market_cap_rank=Math.floor(rank);
   for(const k of ['ath','circulating_supply']){const n=safeNum(c[k],0); if(n!=null)o[k]=n;}
   for(const k of Object.values(TF)){const n=safeNum(c[k],-1000,100000); o[k]=n==null?null:n;}
@@ -133,7 +133,7 @@ const EMPTY_IMG='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACA
 const TILE_FONT="'DIN Alternate','Aptos Display','SF Pro Display',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI Variable Display','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const TILE_NUM_FONT="'SF Mono',ui-monospace,'IBM Plex Mono',Menlo,Consolas,monospace";
 function srcLabel(){return 'snapshot';}
-function logoSrc(c){return c&&c.id&&c.has_logo===true?LOGO_BASE+encodeURIComponent(c.id)+'.png':EMPTY_IMG;}
+function logoSrc(c){return c&&c.id&&c.has_logo!==false?LOGO_BASE+encodeURIComponent(c.id)+'.png':EMPTY_IMG;}
 // Escape any provider-supplied string before putting it in innerHTML.
 // Coin name/symbol/id come from CoinGecko and are attacker-controllable for
 // low-cap tokens, so they are untrusted.
