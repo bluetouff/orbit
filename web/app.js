@@ -343,10 +343,11 @@ function fitTileFont(text,maxWidth,target,min,max,weight=860,family=TILE_FONT){
 }
 function tileScaleLimit(){
   const n=displaySource().length;
-  if(n<=6)return {logo:150,pct:42};
-  if(n<=12)return {logo:124,pct:36};
-  if(n<=24)return {logo:92,pct:28};
-  return {logo:62,pct:20};
+  const screenM=Math.max(420,Math.min(W,H));
+  if(n<=6)return {logo:Math.min(340,screenM*0.32),pct:Math.min(86,screenM*0.085)};
+  if(n<=12)return {logo:Math.min(270,screenM*0.27),pct:Math.min(72,screenM*0.072)};
+  if(n<=24)return {logo:Math.min(200,screenM*0.21),pct:Math.min(54,screenM*0.056)};
+  return {logo:Math.min(110,screenM*0.12),pct:Math.min(30,screenM*0.034)};
 }
 function drawTileLogo(img,cx,cy,size){
   const r=size/2;
@@ -394,24 +395,30 @@ function draw(){
       const pctLabel=fmtPct(pct);
       ctx.textAlign='center';
       if(img&&textM>38&&w>50&&textH>48){
-        const logoSize=Math.max(22,Math.min(textM*0.52,w*0.42,textH*0.62,lim.logo));
-        const gap=Math.max(8,Math.min(16,textM*0.07));
-        const pctSize=fitTileFont(pctLabel,w-pad*2,Math.min(w*0.22,textH*0.24,lim.pct),12,lim.pct,780,TILE_NUM_FONT);
-        const showPct=textH>logoSize+gap+pctSize+pad*2;
-        const blockH=logoSize+(showPct?gap+pctSize:0);
-        const top=textCy-blockH/2;
-        drawTileLogo(img,cx2,top+logoSize/2,logoSize);
-        if(showPct){
+        const gap=Math.max(10,Math.min(24,textM*0.075));
+        const pctSize=fitTileFont(pctLabel,w-pad*2,Math.min(w*0.28,textH*0.30,lim.pct),13,lim.pct,800,TILE_NUM_FONT);
+        const maxLogoForPct=textH-gap-pctSize-pad*2;
+        if(maxLogoForPct>=24){
+          const logoSize=Math.max(24,Math.min(textM*0.58,w*0.48,textH*0.66,lim.logo,maxLogoForPct));
+          const blockH=logoSize+gap+pctSize;
+          const top=textCy-blockH/2;
+          drawTileLogo(img,cx2,top+logoSize/2,logoSize);
           ctx.textBaseline='top';
           ctx.fillStyle='rgba(255,255,255,.92)';
-          ctx.font=`780 ${pctSize}px ${TILE_NUM_FONT}`;
+          ctx.font=`800 ${pctSize}px ${TILE_NUM_FONT}`;
           fillTileText(pctLabel,cx2,top+logoSize+gap);
+        }else{
+          const pctFs=fitTileFont(pctLabel,w-pad*2,Math.min(w*0.40,textH*0.64,lim.pct*1.28),13,lim.pct*1.28,800,TILE_NUM_FONT);
+          ctx.textBaseline='middle';
+          ctx.fillStyle='rgba(255,255,255,.94)';
+          ctx.font=`800 ${pctFs}px ${TILE_NUM_FONT}`;
+          fillTileText(pctLabel,cx2,textCy);
         }
       }else{
-        const pctFs=fitTileFont(pctLabel,w-pad*2,Math.min(w*0.34,textH*0.58,lim.pct*1.22),12,lim.pct*1.22,780,TILE_NUM_FONT);
+        const pctFs=fitTileFont(pctLabel,w-pad*2,Math.min(w*0.40,textH*0.64,lim.pct*1.28),13,lim.pct*1.28,800,TILE_NUM_FONT);
         ctx.textBaseline='middle';
         ctx.fillStyle='rgba(255,255,255,.94)';
-        ctx.font=`780 ${pctFs}px ${TILE_NUM_FONT}`;
+        ctx.font=`800 ${pctFs}px ${TILE_NUM_FONT}`;
         fillTileText(pctLabel,cx2,textCy);
       }}
     else if(textM>13){ctx.fillStyle='rgba(255,255,255,.9)';ctx.textAlign='center';ctx.textBaseline='middle';
