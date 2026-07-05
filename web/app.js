@@ -334,6 +334,24 @@ function drawBadge(x,y,label,bg,fg='#080a0d'){
   ctx.fillStyle=bg;roundRect(x,y,bw,bh,6);ctx.fill();
   ctx.fillStyle=fg;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,x+bw/2,y+bh/2+0.5);
 }
+function fitTileFont(text,maxWidth,target,min,max,weight=860,family=TILE_FONT){
+  let fs=Math.max(min,Math.min(max,target));
+  ctx.font=`${weight} ${fs}px ${family}`;
+  const tw=ctx.measureText(text).width;
+  if(tw>maxWidth)fs=Math.max(min,fs*maxWidth/tw);
+  return fs;
+}
+function drawTileLogo(img,cx,cy,size){
+  const r=size/2;
+  ctx.save();
+  ctx.fillStyle='rgba(6,8,11,.34)';
+  ctx.beginPath();ctx.arc(cx,cy,r+2,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.26)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.arc(cx,cy,r+2,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();
+  try{ctx.drawImage(img,cx-r,cy-r,size,size);}catch(_){}
+  ctx.restore();
+}
 const logoCache=new Map();
 function getLogo(c){
   if(!c||!c.id||c.has_logo!==true)return null;
@@ -361,30 +379,42 @@ function draw(){
     if(t.pulse>0){ctx.strokeStyle=`rgba(232,176,75,${t.pulse})`;ctx.lineWidth=2;roundRect(x,y,w,hh,rad);ctx.stroke();t.pulse-=0.04;}
     const m=Math.min(w,hh);
     const cx2=x+w/2,cy2=y+hh/2;
-    if(m>26){
+    const signalTop=(c._div||c._anom)?(m>34?26:(m>22?18:0)):0;
+    const textH=Math.max(0,hh-signalTop),textCy=y+signalTop+textH/2,textM=Math.min(w,textH);
+    if(textM>24){
       const sym=c.symbol.toUpperCase();
-      let fs=Math.min(w*0.28,hh*0.33,29);
-      fs=Math.min(fs,w*0.84/Math.max(1,sym.length)/0.56);   // fit width
-      fs=Math.max(10,fs);
-      const img=getLogo(c);ctx.textAlign='center';
-      if(img&&m>44){
-        const ls=Math.max(18,Math.min(m*0.32,42)),pf=fs*0.92;
-        const showPct=hh>ls+fs*2.3+12;
-        const blockH=ls+6+fs+(showPct?pf+3:0),top=cy2-blockH/2;
-        try{ctx.drawImage(img,cx2-ls/2,top,ls,ls);}catch(_){}
+      const img=getLogo(c),pad=Math.max(5,Math.min(12,textM*0.12));
+      ctx.textAlign='center';
+      if(img&&textM>38&&w>50&&textH>48){
+        const logoSize=Math.max(18,Math.min(textM*0.34,w*0.24,56));
+        const gap=Math.max(5,Math.min(9,textM*0.08));
+        const pctSize=Math.max(10,Math.min(18,textM*0.17));
+        const showPct=textH>logoSize+gap+textM*0.32+pctSize+pad*2;
+        const textMax=w-pad*2;
+        const fs=fitTileFont(sym,textMax,Math.min(w*0.34,textH*0.38,44),12,44,880);
+        const blockH=logoSize+gap+fs+(showPct?pctSize+4:0);
+        const top=textCy-blockH/2;
+        drawTileLogo(img,cx2,top+logoSize/2,logoSize);
         ctx.textBaseline='top';
-        ctx.fillStyle='rgba(255,255,255,.98)';ctx.font=`720 ${fs}px ${TILE_FONT}`;
-        fillTileText(sym,cx2,top+ls+6);
-        if(showPct){ctx.fillStyle='rgba(255,255,255,.92)';ctx.font=`650 ${pf}px ${TILE_NUM_FONT}`;ctx.fillText(fmtPct(pct),cx2,top+ls+6+fs+3);}
+        ctx.fillStyle='rgba(255,255,255,.99)';ctx.font=`880 ${fs}px ${TILE_FONT}`;
+        fillTileText(sym,cx2,top+logoSize+gap);
+        if(showPct){
+          ctx.fillStyle='rgba(255,255,255,.92)';
+          ctx.font=`700 ${pctSize}px ${TILE_NUM_FONT}`;
+          fillTileText(fmtPct(pct),cx2,top+logoSize+gap+fs+4);
+        }
       }else{
-        const showPct=hh>fs*2.2+8;
+        const fs=fitTileFont(sym,w-pad*2,Math.min(w*0.38,textH*0.48,40),12,40,880);
+        const showPct=textH>fs*2.15+pad*2;
         ctx.textBaseline='middle';
-        ctx.fillStyle='rgba(255,255,255,.98)';ctx.font=`720 ${fs}px ${TILE_FONT}`;
-        fillTileText(sym,cx2,cy2-(showPct?fs*0.5:0));
-        if(showPct){ctx.fillStyle='rgba(255,255,255,.92)';ctx.font=`650 ${fs*0.80}px ${TILE_NUM_FONT}`;ctx.fillText(fmtPct(pct),cx2,cy2+fs*0.62);}
+        ctx.fillStyle='rgba(255,255,255,.99)';ctx.font=`880 ${fs}px ${TILE_FONT}`;
+        fillTileText(sym,cx2,textCy-(showPct?fs*0.5:0));
+        if(showPct){ctx.fillStyle='rgba(255,255,255,.92)';ctx.font=`700 ${fs*0.78}px ${TILE_NUM_FONT}`;fillTileText(fmtPct(pct),cx2,textCy+fs*0.62);}
       }}
-    else if(m>13){ctx.fillStyle='rgba(255,255,255,.9)';ctx.textAlign='center';ctx.textBaseline='middle';
-      ctx.font=`720 ${Math.max(8,m*0.46)}px ${TILE_FONT}`;fillTileText(c.symbol.toUpperCase().slice(0,4),x+w/2,y+hh/2);}
+    else if(textM>13){ctx.fillStyle='rgba(255,255,255,.9)';ctx.textAlign='center';ctx.textBaseline='middle';
+      const tiny=c.symbol.toUpperCase().slice(0,4);
+      const fs=fitTileFont(tiny,w-6,Math.max(9,textM*0.58),8,18,860);
+      ctx.font=`860 ${fs}px ${TILE_FONT}`;fillTileText(tiny,x+w/2,textCy);}
     if(c._div){
       const col=divColor(c._div.kind), soft=divColor(c._div.kind,.18);
       ctx.fillStyle=soft;roundRect(x+1,y+1,w-2,Math.max(5,Math.min(10,hh*.12)),Math.min(rad,6));ctx.fill();
