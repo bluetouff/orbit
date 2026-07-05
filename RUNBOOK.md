@@ -18,7 +18,7 @@ CoinGecko CDN.
         ^   ^
         |   | Alias /logos  (read-only, long cache)
         | Alias /data.json (read-only, 20 s cache + stale)
-  Apache 443 --> /var/www/html/{index.html,app.css,app.js}
+  Apache 443 --> /var/www/html/orbit/{index.html,app.css,app.js}
 ```
 
 Repository layout: `web/` (static front), `deploy/` (service, timer, vhost),
@@ -44,13 +44,13 @@ sudo install -d -m 755 /opt/orbit
 sudo install -o root -g root -m 0755 build_snapshot.py /opt/orbit/build_snapshot.py
 sudo install -o root -g root -m 0755 scripts/validate_snapshot.py /opt/orbit/validate_snapshot.py
 
-sudo install -d -m 755 /var/www/html
-sudo install -o root -g root -m 0644 web/index.html /var/www/html/index.html
-sudo install -o root -g root -m 0644 web/app.css    /var/www/html/app.css
-sudo install -o root -g root -m 0644 web/app.js     /var/www/html/app.js
-sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/html/orbit.svg
-sudo install -d -m 755 /var/www/html/legal
-sudo install -o root -g root -m 0644 web/legal/index.html /var/www/html/legal/index.html
+sudo install -d -m 755 /var/www/html/orbit
+sudo install -o root -g root -m 0644 web/index.html /var/www/html/orbit/index.html
+sudo install -o root -g root -m 0644 web/app.css    /var/www/html/orbit/app.css
+sudo install -o root -g root -m 0644 web/app.js     /var/www/html/orbit/app.js
+sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/html/orbit/orbit.svg
+sudo install -d -m 755 /var/www/html/orbit/legal
+sudo install -o root -g root -m 0644 web/legal/index.html /var/www/html/orbit/legal/index.html
 # Do NOT copy web/data.json to prod: it is the demo sample.
 ```
 
@@ -100,7 +100,7 @@ sudo cp deploy/orbit.l0g.fr.conf /etc/apache2/sites-available/orbit.l0g.fr.conf
 sudo a2ensite orbit.l0g.fr
 sudo apache2ctl configtest && sudo systemctl reload apache2
 # certificate (webroot):
-sudo certbot --apache -d orbit.l0g.fr      # or certonly --webroot -w /var/www/html
+sudo certbot --apache -d orbit.l0g.fr      # or certonly --webroot -w /var/www/html/orbit
 sudo systemctl reload apache2
 ```
 
