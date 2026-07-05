@@ -1,13 +1,14 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ORBIT — heatmap crypto</title>
+<title>ORBIT - crypto heatmap</title>
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'">
-<!-- privacy-first : aucune police distante, aucun tracker, aucune requête tierce -->
+<!-- privacy-first: no remote fonts, no tracker, no third-party request -->
+<link rel="icon" href="orbit.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -15,31 +16,42 @@
   <div id="tint"></div>
   <header>
     <div class="bar1">
-      <div class="brand"><span class="dot"></span><h1>Orbit</h1><span class="tag" id="updated">live · coingecko</span></div>
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <circle class="mark-halo" cx="24" cy="24" r="19"/>
+          <circle class="mark-core" cx="24" cy="24" r="5.8"/>
+          <ellipse class="mark-ring main" cx="24" cy="24" rx="18" ry="8.6" transform="rotate(-24 24 24)"/>
+          <ellipse class="mark-ring ghost" cx="24" cy="24" rx="18" ry="8.6" transform="rotate(24 24 24)"/>
+          <circle class="mark-sat" cx="39" cy="15" r="3.1"/>
+        </svg>
+        <h1>Orbit</h1><span class="tag" id="updated">live · coingecko</span>
+      </div>
       <div class="macro" id="macro"></div>
       <div class="hbtns">
-        <button class="icobtn" id="searchBtn" title="Rechercher dans ma liste">
+        <button class="icobtn" id="searchBtn" title="Search my coins">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
         </button>
-        <button class="pickbtn" id="pickBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Mes cryptos <span class="badge" id="selBadge">0</span></button>
+        <button class="pickbtn" id="pickBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> My coins <span class="badge" id="selBadge">0</span></button>
       </div>
     </div>
     <div class="bar2">
       <div class="viewseg" id="viewSeg">
-        <button data-v="top" class="on">Top 100</button>
-        <button data-v="fav">★ <span id="favCount">0</span></button>
+        <button data-v="fav" class="on">Watchlist <span id="favCount">0</span></button>
+        <button data-v="top">Market</button>
       </div>
       <div class="seg" id="seg">
         <div class="pill"></div>
         <button data-tf="1h">1H</button>
         <button data-tf="24h" class="on">24H</button>
-        <button data-tf="7d">7J</button>
-        <button data-tf="30d">30J</button>
+        <button data-tf="7d">7D</button>
+        <button data-tf="30d">30D</button>
       </div>
       <div class="chips" id="chips">
-        <button class="chip on" data-f="all">Tout</button>
-        <button class="chip" data-f="gainers">Hausses</button>
-        <button class="chip" data-f="losers">Baisses</button>
+        <button class="chip on" data-f="all">All</button>
+        <button class="chip signal" data-f="div">Divergences</button>
+        <button class="chip signal" data-f="anom">Anomalies</button>
+        <button class="chip" data-f="gainers">Gainers</button>
+        <button class="chip" data-f="losers">Losers</button>
         <button class="chip size perf" id="sizeBtn">△ perf</button>
       </div>
       <div class="subline" id="subline"></div>
@@ -47,32 +59,78 @@
   </header>
 
   <div id="stage">
-    <div id="demoflag">données de démonstration · API indisponible</div>
+    <div id="demoflag">demo data · API unavailable</div>
     <canvas id="map"></canvas>
-    <div id="status"><div class="spin"></div>chargement de l'univers (top 1000)…</div>
-    <div id="empty"><p>Aucun favori pour l'instant.<br>Ajoute jusqu'à 50 cryptos à suivre.</p><button id="emptyPick">+ Choisir mes favoris</button></div>
-    <div class="legend"><span>baisse</span><div class="bar"></div><span>hausse</span></div>
+    <div id="status"><div class="spin"></div>loading snapshot...</div>
+    <div id="empty">
+      <div class="welcome">
+        <div class="welcome-copy">
+          <div class="welcome-lockup" aria-hidden="true">
+            <svg class="hero-mark" viewBox="0 0 72 72">
+              <circle class="mark-halo" cx="36" cy="36" r="28"/>
+              <circle class="mark-core" cx="36" cy="36" r="8.5"/>
+              <ellipse class="mark-ring main" cx="36" cy="36" rx="28" ry="13.5" transform="rotate(-24 36 36)"/>
+              <ellipse class="mark-ring ghost" cx="36" cy="36" rx="28" ry="13.5" transform="rotate(24 36 36)"/>
+              <circle class="mark-sat" cx="59" cy="22" r="4.3"/>
+            </svg>
+            <div><b>Orbit</b><span>Crypto signal map</span></div>
+          </div>
+          <p class="eyebrow">Watchlist first</p>
+          <h2>Track the coins that deserve your attention.</h2>
+          <p class="lead">A private watchlist heatmap for performance, cross-market divergences and unusual moves. Less noise, more signal.</p>
+          <div class="welcome-proof" aria-hidden="true">
+            <span><b>50</b> assets max</span>
+            <span><b>30s</b> crypto cadence</span>
+            <span><b>0</b> third parties</span>
+          </div>
+          <div class="welcome-actions">
+            <button id="emptyPick">Build my watchlist</button>
+            <span>stored locally · same-origin data</span>
+          </div>
+        </div>
+        <div class="welcome-signal" aria-hidden="true">
+          <div class="signal-head"><span>Orbit signal stack</span><b>Same-origin feed</b></div>
+          <div class="signal-chart">
+            <span class="chart-line"></span>
+            <i class="p1"></i>
+            <i class="p2"></i>
+            <i class="p3"></i>
+            <i class="p4"></i>
+          </div>
+          <div class="signal-row hot"><i></i><div><b>Divergence</b><span>price vs social / activity</span></div><em>ACC / EXH</em></div>
+          <div class="signal-row"><i></i><div><b>Anomaly</b><span>moves beyond peer range</span></div><em>&gt;2σ</em></div>
+          <div class="signal-row cool"><i></i><div><b>Heatmap size</b><span>performance, cap or volume</span></div><em>△</em></div>
+        </div>
+      </div>
+    </div>
+    <div class="legend"><span>down</span><div class="bar"></div><span>up</span></div>
   </div>
 </div>
+
+<footer class="legalbar" aria-label="Legal links">
+  <a href="https://l0g.fr/" rel="noopener">l0g Lab</a>
+  <a href="legal/">Legal &amp; GDPR</a>
+  <span>No trackers · same-origin data</span>
+</footer>
 
 <div class="scrim" id="scrim"></div>
 <div class="sheet" id="sheet"></div>
 <div id="toast"></div>
 
 <div class="over" id="picker"><div class="card">
-  <div class="hd"><h3>Mes cryptos</h3><button class="done" id="pickDone">Terminé</button></div>
-  <div class="sb"><input id="pickInput" placeholder="rechercher dans le top 1000…" autocomplete="off" spellcheck="false"></div>
-  <div class="meta"><span id="pickCount">0 sélectionnées</span><span id="pickUniv">univers : —</span></div>
+  <div class="hd"><h3>My coins</h3><button class="done" id="pickDone">Done</button></div>
+  <div class="sb"><input id="pickInput" placeholder="search the universe..." autocomplete="off" spellcheck="false"></div>
+  <div class="meta"><span id="pickCount">0 selected</span><span id="pickUniv">universe: -</span></div>
   <div class="pickctl">
-    <button class="favtog" id="favTog"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 17l-5.3 2.6 1.1-6L3.4 9.4l6-.8z"/></svg> favoris</button>
+    <button class="favtog" id="favTog"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 17l-5.3 2.6 1.1-6L3.4 9.4l6-.8z"/></svg> favorites</button>
     <div class="pager" id="pickPager"></div>
   </div>
   <div class="list" id="pickList"></div>
 </div></div>
 
 <div class="over" id="search"><div class="card">
-  <div class="hd"><h3>Aller à</h3><button class="done" id="searchDone">Fermer</button></div>
-  <div class="sb"><input id="searchInput" placeholder="dans ma liste…" autocomplete="off" spellcheck="false"></div>
+  <div class="hd"><h3>Jump to</h3><button class="done" id="searchDone">Close</button></div>
+  <div class="sb"><input id="searchInput" placeholder="in my list..." autocomplete="off" spellcheck="false"></div>
   <div class="list" id="searchList"></div>
 </div></div>
 

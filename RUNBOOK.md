@@ -1,39 +1,40 @@
-# Déploiement d'Orbit sur l0g.fr (architecture snapshot)
+# Deploying Orbit on l0g.fr (snapshot architecture)
 
-Même patron que yct/us/euro/energie : un timer systemd régénère un JSON statique
-hors webroot, Apache sert du statique, le navigateur ne contacte **aucun tiers**
-et **aucune clé** n'est exposée. Les logos sont téléchargés une fois côté serveur
-et servis en local — donc zéro requête vers le CDN CoinGecko.
+Same pattern as yct/us/euro/energy: a systemd timer regenerates a static JSON
+snapshot outside the web root, Apache serves static files, the browser contacts
+**no third party**, and **no secret** is exposed client-side. Logos are fetched
+once server-side and served locally, so there is no browser request to the
+CoinGecko CDN.
 
-```
-  timer systemd (toutes les 2 min)
+```text
+  systemd timer (crypto markets about every 30 s)
         |
         v
-  build_snapshot.py --(HTTPS)--> CoinGecko (+ LunarCrush, + FRED si clés)
-        |                          + télécharge les logos manquants
+  build_snapshot.py --(HTTPS)--> CoinGecko markets every run
+        |                          + TTL-cached global/social/macro/logos
         v
-  /var/lib/orbit/orbit.json   (écriture atomique, hors web root)
+  /var/lib/orbit/orbit.json   (atomic write, outside web root)
   /var/lib/orbit/logos/*.png
         ^   ^
-        |   | Alias /logos  (lecture seule, cache long)
-        | Alias /data.json (lecture seule, cache 30s)
+        |   | Alias /logos  (read-only, long cache)
+        | Alias /data.json (read-only, 20 s cache + stale)
   Apache 443 --> /var/www/orbit/{index.html,app.css,app.js}
 ```
 
-Arborescence du dépôt : `web/` (front statique), `deploy/` (service, timer, vhost),
-`build_snapshot.py` et `env.example` à la racine.
+Repository layout: `web/` (static front), `deploy/` (service, timer, vhost),
+`build_snapshot.py` and `env.example` at the root.
 
 ---
 
-## 0. Prérequis
+## 0. Requirements
 
-- DNS `A`/`AAAA` : `orbit.l0g.fr` → IP de zen.
-- Modules Apache : `sudo a2enmod ssl headers rewrite`
-- Python 3 (le builder n'utilise que la stdlib, aucun pip).
+- DNS `A`/`AAAA`: `orbit.l0g.fr` -> zen IP.
+- Apache modules: `sudo a2enmod ssl headers rewrite`
+- Python 3. The builder only uses the standard library, no pip dependency.
 
 ---
 
-## 1. Utilisateur système et arborescence
+## 1. System User And Directory Layout
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin orbit
@@ -41,17 +42,21 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin orbit
 sudo install -d -o orbit -g orbit -m 755 /var/lib/orbit /var/lib/orbit/logos
 sudo install -d -m 755 /opt/orbit
 sudo install -o root -g root -m 0755 build_snapshot.py /opt/orbit/build_snapshot.py
+sudo install -o root -g root -m 0755 scripts/validate_snapshot.py /opt/orbit/validate_snapshot.py
 
 sudo install -d -m 755 /var/www/orbit
 sudo install -o root -g root -m 0644 web/index.html /var/www/orbit/index.html
 sudo install -o root -g root -m 0644 web/app.css    /var/www/orbit/app.css
 sudo install -o root -g root -m 0644 web/app.js     /var/www/orbit/app.js
-# ne PAS copier web/data.json en prod : c'est l'échantillon de démo.
+sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/orbit/orbit.svg
+sudo install -d -m 755 /var/www/orbit/legal
+sudo install -o root -g root -m 0644 web/legal/index.html /var/www/orbit/legal/index.html
+# Do NOT copy web/data.json to prod: it is the demo sample.
 ```
 
 ---
 
-## 2. Configuration (clés côté serveur uniquement)
+## 2. Configuration (Server-Side Keys Only)
 
 ```bash
 sudo install -d -o orbit -g orbit -m 750 /etc/orbit
@@ -60,21 +65,23 @@ sudo chown orbit:orbit /etc/orbit/orbit.env && sudo chmod 640 /etc/orbit/orbit.e
 sudoedit /etc/orbit/orbit.env       # CG_API_TIER/CG_API_KEY, LUNARCRUSH_API_KEY, FRED_API_KEY
 ```
 
-Sans aucune clé, l'app fonctionne déjà via l'API publique CoinGecko. LunarCrush
-active l'axe social réel (Galaxy Score) ; FRED active le bandeau macro réel.
+Without any key, the app already works through CoinGecko's public API.
+LunarCrush enables the real social axis (Galaxy Score); FRED enables the real
+macro strip.
 
 ---
 
-## 3. Premier build manuel
+## 3. First Manual Build
 
 ```bash
 sudo -u orbit ORBIT_OUT_DIR=/var/lib/orbit /usr/bin/python3 /opt/orbit/build_snapshot.py
 ls -lh /var/lib/orbit/orbit.json /var/lib/orbit/logos | head
+/usr/bin/python3 /opt/orbit/validate_snapshot.py /var/lib/orbit/orbit.json
 ```
 
 ---
 
-## 4. Timer systemd
+## 4. systemd Timer
 
 ```bash
 sudo cp deploy/orbit-snapshot.service deploy/orbit-snapshot.timer /etc/systemd/system/
@@ -86,49 +93,89 @@ journalctl -u orbit-snapshot.service -n 20 --no-pager
 
 ---
 
-## 5. Apache + certificat
+## 5. Apache And Certificate
 
 ```bash
 sudo cp deploy/orbit.l0g.fr.conf /etc/apache2/sites-available/orbit.l0g.fr.conf
 sudo a2ensite orbit.l0g.fr
 sudo apache2ctl configtest && sudo systemctl reload apache2
-# certificat (webroot) :
-sudo certbot --apache -d orbit.l0g.fr      # ou certonly --webroot -w /var/www/orbit
+# certificate (webroot):
+sudo certbot --apache -d orbit.l0g.fr      # or certonly --webroot -w /var/www/orbit
 sudo systemctl reload apache2
 ```
 
 ---
 
-## 6. Vérifier la promesse privacy
+## 6. Verify The Privacy Promise
 
-Sur le site déployé, onglet Réseau des devtools : **toutes** les requêtes doivent
-viser `orbit.l0g.fr` (le HTML, `app.css`, `app.js`, `/data.json`, `/logos/*.png`).
-Aucune requête vers `coingecko.com`, `coin-images.coingecko.com`, `lunarcrush.com`,
-`googleapis.com` ou tout autre tiers. La CSP `connect-src 'self'` l'interdit de toute façon.
+On the deployed site, open the Network tab in devtools: **every** request must
+target `orbit.l0g.fr` (HTML, `app.css`, `app.js`, `/data.json`, `/logos/*.png`).
+There must be no request to `coingecko.com`, `coin-images.coingecko.com`,
+`lunarcrush.com`, `googleapis.com`, or any other third party. The CSP
+`connect-src 'self'` enforces this anyway.
 
 ---
 
-## 7. Réglages utiles
+## 7. Capacity And API Limits
 
-- **Cadence** : `OnUnitActiveSec` dans le timer (défaut 120 s). Le front relit le
-  JSON toutes les 30 s (`REFRESH_MS` dans `app.js`).
-- **Profondeur** : `ORBIT_TOP` (univers) et `ORBIT_SPARK_TOP` (coins avec sparkline)
-  dans `orbit.env`. Plus c'est grand, plus `orbit.json` est lourd.
-- **Favoris / vue** dans `app.js` : `MAX_FAV` (défaut 50, plafond de favoris),
-  `TOP_N` (défaut 100, taille de la vue « Top » par défaut). Les favoris sont
-  persistés côté navigateur via `localStorage` (clé `orbit.favs.v1`) : aucun compte,
-  aucun login, rien n'est envoyé au serveur.
-- **Budget API** : un build = ~2 appels CoinGecko (pages markets) + 1 global
-  (+1 LunarCrush, +2 FRED si clés). À 120 s, ça reste très en dessous des limites.
+User traffic is decoupled from data providers:
 
-## Sécurité (résumé)
+- Browsers never contact CoinGecko, LunarCrush or FRED.
+- 50,000 concurrent users read the same static `/data.json` and the same
+  self-hosted `/logos/*.png`.
+- Provider call volume depends only on the systemd timer, not on traffic.
 
-- Aucune clé dans le navigateur, aucun appel tiers côté client, aucune fuite d'IP
-  utilisateur vers les fournisseurs de données.
-- CSP `default-src 'none'` ; `script-src 'self'` (app.js externe, pas d'inline) ;
-  `connect-src 'self'`. Logos et données en same-origin.
-- Builder non privilégié et fortement sandboxé (ProtectSystem=strict,
-  MemoryDenyWriteExecute, SystemCallFilter, un seul chemin inscriptible), https-only,
-  allowlist d'hôtes pour les logos, taille de réponse bornée, écritures atomiques.
-- Clés FRED/LunarCrush/CoinGecko dans `/etc/orbit/orbit.env` (640), injectées par
-  systemd, jamais sur disque accessible au front.
+With the default settings (`ORBIT_TOP=500`, ~30 s timer), one crypto-market
+build calls CoinGecko for 2 `coins/markets` pages. CoinGecko `global` is fetched
+at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
+3600 s. That is roughly 4-5 CoinGecko calls per minute at rest, well below the
+documented public/demo order of magnitude, and the browser population does not
+change that number. Missing logos are downloaded in bounded batches
+(`ORBIT_LOGO_FETCH_PER_RUN`, default 60) to avoid a CDN spike at first start.
+
+For 50,000 concurrent connections, the capacity point is therefore the static
+serving layer, not provider API limits:
+
+```bash
+curl -I https://orbit.l0g.fr/data.json
+curl -I https://orbit.l0g.fr/app.js
+curl -I https://orbit.l0g.fr/legal/
+curl -I https://orbit.l0g.fr/logos/bitcoin.png
+```
+
+Check: `Cache-Control` is present, gzip/deflate is active on JSON/JS/CSS, Apache
+logs show no 5xx, and network throughput is sufficient. If traffic really
+becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
+`/data.json`, `app.js`, `app.css` and `/logos/*` without changing the builder.
+
+---
+
+## 8. Useful Settings
+
+- **Provider cadence**: `OnUnitActiveSec` in the timer (default 30 s for crypto
+  markets). The front rereads the JSON roughly every 30 s, with jitter and a
+  pause in hidden tabs
+  (`REFRESH_MS` / `REFRESH_JITTER_MS` in `app.js`).
+- **Slow-source TTLs**: `ORBIT_GLOBAL_REFRESH_SEC` (default 120),
+  `ORBIT_SOCIAL_REFRESH_SEC` (default 900), `ORBIT_MACRO_REFRESH_SEC`
+  (default 3600). Non-due sources are reused from the previous snapshot.
+- **Depth**: `ORBIT_TOP` (universe) and `ORBIT_SPARK_TOP` (coins with sparkline)
+  in `orbit.env`. The larger it is, the heavier `orbit.json` gets.
+- **Logo warmup**: `ORBIT_LOGO_FETCH_PER_RUN` caps new logo downloads per build.
+  Logos already present do not trigger a provider call.
+- **Watchlist / view** in `app.js`: `MAX_FAV` (default 50, favorite cap),
+  `TOP_N` (default 100, market view size). The default screen is the watchlist.
+  Favorites are persisted in the browser through `localStorage`
+  (`orbit.favs.v1`): no account, no login, nothing is sent to the server.
+
+## Security Summary
+
+- No key in the browser, no client-side third-party call, no user IP leak to data
+  providers.
+- CSP `default-src 'none'`; `script-src 'self'` (external app.js, no inline);
+  `connect-src 'self'`. Logos and data are same-origin.
+- Unprivileged and strongly sandboxed builder (ProtectSystem=strict,
+  MemoryDenyWriteExecute, SystemCallFilter, a single writable path), HTTPS-only,
+  logo host allowlist, bounded response size, atomic writes.
+- FRED/LunarCrush/CoinGecko keys live in `/etc/orbit/orbit.env` (640), injected
+  by systemd, never on disk where the front can access them.

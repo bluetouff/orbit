@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <defs>
+    <radialGradient id="halo" cx="36%" cy="31%" r="72%">
+      <stop offset="0" stop-color="#f2c468" stop-opacity=".32"/>
+      <stop offset=".46" stop-color="#56c8e8" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#080a0d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringA" x1="14" y1="30" x2="82" y2="66">
+      <stop offset="0" stop-color="#eef2f6"/>
+      <stop offset=".52" stop-color="#f2c468"/>
+      <stop offset="1" stop-color="#56c8e8"/>
+    </linearGradient>
+    <linearGradient id="ringB" x1="19" y1="68" x2="77" y2="24">
+      <stop offset="0" stop-color="#56c8e8"/>
+      <stop offset=".55" stop-color="#eef2f6"/>
+      <stop offset="1" stop-color="#f2c468"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="24" fill="#090d11"/>
+  <circle cx="48" cy="48" r="40" fill="url(#halo)"/>
+  <ellipse cx="48" cy="48" rx="35" ry="16" transform="rotate(-24 48 48)" fill="none" stroke="url(#ringA)" stroke-width="5" stroke-linecap="round"/>
+  <ellipse cx="48" cy="48" rx="35" ry="16" transform="rotate(24 48 48)" fill="none" stroke="url(#ringB)" stroke-width="3.6" stroke-linecap="round" opacity=".76"/>
+  <circle cx="48" cy="48" r="11.5" fill="#e8b04b"/>
+  <circle cx="75" cy="31" r="5.8" fill="#56c8e8"/>
+</svg>

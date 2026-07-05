@@ -2,11 +2,11 @@
 Description=Run the Orbit snapshot builder periodically
 
 [Timer]
-# every 2 minutes, plus shortly after boot; jitter avoids hitting the API on the dot
+# crypto markets about every 30 seconds; slower sources are TTL-cached by the builder
 OnBootSec=45
-OnUnitActiveSec=120
-RandomizedDelaySec=15
-AccuracySec=10
+OnUnitActiveSec=30
+RandomizedDelaySec=10
+AccuracySec=5
 Persistent=true
 
 [Install]
