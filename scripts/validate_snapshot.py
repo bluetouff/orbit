@@ -24,7 +24,7 @@ PCT_NUMS = (
 
 
 def is_num(v):
-    return isinstance(v, (int, float)) and math.isfinite(v)
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
 
 
 def in_range(v, lo, hi):
@@ -114,6 +114,16 @@ def main(path):
             return fail(f"{cid} has invalid symbol")
         if not clean_text(name, 96):
             return fail(f"{cid} has invalid name")
+        if c.get("last_updated") is not None:
+            observed = c["last_updated"]
+            if not clean_text(observed, 40):
+                return fail(f"{cid} has invalid last_updated")
+            try:
+                stamp = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    return fail(f"{cid} last_updated needs a timezone")
+            except ValueError:
+                return fail(f"{cid} has invalid last_updated")
         for k in REQUIRED_NUMS:
             if not is_num(c.get(k)) or c[k] < 0:
                 return fail(f"{cid} has invalid {k}")
@@ -121,7 +131,7 @@ def main(path):
             if c.get(k) is not None and not is_num(c.get(k)):
                 return fail(f"{cid} has invalid {k}")
         for k in PCT_NUMS:
-            if c.get(k) is not None and not in_range(c.get(k), -1000, 100000):
+            if c.get(k) is not None and not in_range(c.get(k), -100, 100000):
                 return fail(f"{cid} has invalid {k}")
         if c.get("galaxy_score") is not None and not in_range(c["galaxy_score"], 0, 100):
             return fail(f"{cid} has invalid galaxy_score")

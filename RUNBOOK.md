@@ -21,7 +21,7 @@ CoinGecko CDN.
         ^   ^
         |   | Alias /logos  (read-only, long cache)
         | Alias /data.json (read-only, 20 s cache + stale)
-  Apache 443 --> /var/www/html/orbit/{index.html,app.css,app.js}
+  Apache 443 --> /var/www/html/orbit/{index.html,app.css,core.js,app.js,icons/}
 ```
 
 Repository layout: `web/` (static front), `deploy/` (service, timer, vhost),
@@ -50,7 +50,10 @@ sudo install -o root -g root -m 0755 scripts/validate_snapshot.py /opt/orbit/val
 sudo install -d -m 755 /var/www/html/orbit
 sudo install -o root -g root -m 0644 web/index.html /var/www/html/orbit/index.html
 sudo install -o root -g root -m 0644 web/app.css    /var/www/html/orbit/app.css
+sudo install -o root -g root -m 0644 web/core.js    /var/www/html/orbit/core.js
 sudo install -o root -g root -m 0644 web/app.js     /var/www/html/orbit/app.js
+sudo install -d -m 755 /var/www/html/orbit/icons
+sudo install -o root -g root -m 0644 web/icons/*.svg web/icons/LICENSE /var/www/html/orbit/icons/
 sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/html/orbit/orbit.svg
 sudo install -d -m 755 /var/www/html/orbit/legal
 sudo install -o root -g root -m 0644 web/legal/index.html /var/www/html/orbit/legal/index.html
@@ -69,8 +72,9 @@ sudoedit /etc/orbit/orbit.env       # CG_API_TIER/CG_API_KEY, LUNARCRUSH_API_KEY
 ```
 
 Without any key, the app already works through CoinGecko's public API.
-LunarCrush enables the real social axis (Galaxy Score); FRED enables the real
-macro strip.
+LunarCrush supplies separate social context (Galaxy Score); FRED supplies macro
+observations with publication dates. Neither source changes the market signal
+reference or substitutes for missing crypto returns.
 
 ---
 
@@ -131,9 +135,10 @@ User traffic is decoupled from data providers:
 With the default settings (`ORBIT_TOP=500`, ~30 s timer), one crypto-market
 build calls CoinGecko for 2 `coins/markets` pages. CoinGecko `global` is fetched
 at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
-3600 s. That is roughly 4-5 CoinGecko calls per minute at rest, well below the
-documented public/demo order of magnitude, and the browser population does not
-change that number. Missing logos are downloaded in bounded batches
+3600 s. That is roughly 4-5 CoinGecko calls per minute at rest. This is not a
+guarantee against rate limits: check both minute limits and monthly credits on
+the actual provider plan. Browser population does not change that number.
+Missing logos are downloaded in bounded batches
 (`ORBIT_LOGO_FETCH_PER_RUN`, default 60) to avoid a CDN spike at first start.
 
 For 50,000 concurrent connections, the capacity point is therefore the static
@@ -158,7 +163,7 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 - **Provider cadence**: `OnUnitActiveSec` in the timer (default 30 s for crypto
   markets). The front rereads the JSON roughly every 30 s, with jitter and a
   pause in hidden tabs
-  (`REFRESH_MS` / `REFRESH_JITTER_MS` in `app.js`).
+  (30-45 seconds in `app.js`).
 - **Slow-source TTLs**: `ORBIT_GLOBAL_REFRESH_SEC` (default 120),
   `ORBIT_SOCIAL_REFRESH_SEC` (default 900), `ORBIT_MACRO_REFRESH_SEC`
   (default 3600). Non-due sources are reused from the previous snapshot.
@@ -166,10 +171,58 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
   in `orbit.env`. The larger it is, the heavier `orbit.json` gets.
 - **Logo warmup**: `ORBIT_LOGO_FETCH_PER_RUN` caps new logo downloads per build.
   Logos already present do not trigger a provider call.
-- **Watchlist / view** in `app.js`: `MAX_FAV` (default 50, favorite cap),
-  `TOP_N` (default 100, market view size). The default screen is the watchlist.
+- **Watchlist / view**: 50 favorites maximum (`core.js`), 100 coins in the market
+  view (`app.js`). The default screen is the watchlist.
   Favorites are persisted in the browser through `localStorage`
   (`orbit.favs.v1`): no account, no login, nothing is sent to the server.
+
+## Upgrading an Existing Front
+
+The installation sections above describe a new instance, not an unattended
+upgrade. Before changing an existing production installation, inspect its real
+vhost, aliases, service paths and timer. Back up the served front and record the
+exact deployed revision. Do not change API cadence as part of a UI release.
+
+This front requires `core.js` and `icons/` in addition to `app.js`, `app.css`,
+`index.html`, `orbit.svg` and `legal/index.html`. Deploy these as one tested
+release, not an `app.js`-only update. Use matching asset versions/cache busting
+for activation so cached old scripts cannot run against the new HTML. Never
+overwrite production `data.json`, logos or provider configuration with local
+preview files. Keep rollback available and verify the served revision, CSP,
+watchlist, source ages, asset dialog and legal scrolling before declaring success.
+
+### Guarded Activation
+
+`scripts/deploy_front.py` is for the existing `/var/www/html/orbit` installation.
+Run it on the production host from a clean checkout at the exact approved SHA:
+
+```bash
+python3 scripts/deploy_front.py --revision FULL_40_CHARACTER_SHA
+sudo python3 scripts/deploy_front.py --revision FULL_40_CHARACTER_SHA --apply
+```
+
+The first command is read-only. It checks that both public entry pages match the
+local web root, that the expected CSP is present and that the public snapshot is
+current. Activation prepares `/releases/<SHA>/` containing only allowlisted
+static assets, then checks every asset's HTTPS body and MIME type before swapping
+the two entry pages with atomic file replacements. Each page references one
+complete immutable asset version. A public `orbit-release` meta tag identifies
+the exact source SHA. Existing `app.js`, `app.css`, logos and data stay untouched.
+
+Original entry pages and a hash manifest are saved under `/var/backups/orbit/`.
+The command prints the exact rollback instruction before activating. A failed
+post-activation public check automatically restores the original pages. Manual
+rollback refuses to overwrite a subsequently modified or newer release:
+
+```bash
+sudo python3 scripts/deploy_front.py --rollback BACKUP_DIRECTORY_NAME
+```
+
+No Apache reload, service restart or provider request is made. Changes to the
+Python collector in the repository are **not** installed by this front-only
+release. Plan a separate collector update after inspecting the current service
+and environment on the host. Do not delete immutable release assets while old
+tabs or rollback entry pages may still refer to them.
 
 ## Security Summary
 

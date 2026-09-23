@@ -10,7 +10,8 @@ ever reads same-origin static files: no third-party calls, no API key client-sid
 Stdlib only (urllib/json/ssl) — no pip. Hardened: https-only, host allowlist
 for logos, per-response size cap, timeouts, atomic writes.
 """
-import calendar, json, math, os, re, ssl, sys, time, urllib.request, urllib.parse, urllib.error
+import calendar, datetime, json, math, os, re, ssl, sys, time, urllib.request, urllib.parse, urllib.error
+from collections import Counter
 
 
 def env_int(name, default, lo, hi):
@@ -110,9 +111,10 @@ def mark_reused(status, ttl):
 
 def previous_social(prev):
     out = {}
+    counts = Counter((c.get("symbol") or "").upper() for c in prev.get("coins") or [])
     for c in prev.get("coins") or []:
         sym = (c.get("symbol") or "").upper()
-        if sym and c.get("galaxy_score") is not None:
+        if sym and counts[sym] == 1 and c.get("galaxy_score") is not None:
             out[sym] = {"galaxy_score": c.get("galaxy_score"), "sentiment": c.get("sentiment"),
                         "social_dominance": c.get("social_dominance")}
     return out
@@ -147,6 +149,8 @@ def downsample(arr, n):
 
 
 def finite_num(v, *, lo=None, hi=None):
+    if isinstance(v, bool):
+        return None
     try:
         n = float(v)
     except (TypeError, ValueError):
@@ -188,6 +192,14 @@ def normalize_coin(c, social_by_symbol, include_spark):
     if not cid or not sym or not name or not COIN_ID_RE.match(cid) or not SYMBOL_RE.match(sym):
         return None
     o = {"id": cid, "symbol": sym.lower(), "name": name}
+    observed = c.get("last_updated")
+    if isinstance(observed, str) and len(observed) <= 40:
+        try:
+            stamp = datetime.datetime.fromisoformat(observed.replace("Z", "+00:00"))
+            if stamp.tzinfo is not None:
+                o["last_updated"] = stamp.isoformat()
+        except ValueError:
+            pass
     required = ("current_price", "market_cap", "total_volume")
     for k in required:
         n = finite_num(c.get(k), lo=0)
@@ -203,7 +215,7 @@ def normalize_coin(c, social_by_symbol, include_spark):
         o["market_cap_rank"] = int(rank)
     for k in ("price_change_percentage_1h_in_currency", "price_change_percentage_24h_in_currency",
               "price_change_percentage_7d_in_currency", "price_change_percentage_30d_in_currency"):
-        n = finite_num(c.get(k), lo=-1000, hi=100000)
+        n = finite_num(c.get(k), lo=-100, hi=100000)
         o[k] = round(n, 6) if n is not None else None
     s = social_by_symbol.get(sym.upper())
     if s:
@@ -241,9 +253,11 @@ def get_social():
         sys.stderr.write(f"social skip: {type(e).__name__}\n")
         return {}, {"enabled": True, "ok": False, "error": type(e).__name__, "count": 0, "fetched_at": utc_now()}
     out = {}
-    for it in d.get("data", []):
+    rows = d.get("data", [])
+    counts = Counter((it.get("symbol") or "").upper() for it in rows)
+    for it in rows:
         sym = (it.get("symbol") or "").upper()
-        if sym:
+        if sym and counts[sym] == 1:
             out[sym] = {"galaxy_score": it.get("galaxy_score"), "sentiment": it.get("sentiment"),
                         "social_dominance": it.get("social_dominance")}
     return out, {"enabled": True, "ok": True, "count": len(out), "match": "symbol", "fetched_at": utc_now()}
@@ -305,6 +319,7 @@ def build():
     os.makedirs(LOGO_DIR, exist_ok=True)
     previous = load_previous()
     markets = get_markets()
+    markets_fetched_at = utc_now()
     if not markets:
         sys.stderr.write("no market data; aborting (keeping previous snapshot)\n")
         sys.exit(1)
@@ -336,11 +351,17 @@ def build():
         if macro is None and previous.get("macro"):
             macro = previous.get("macro")
             macro_status["reused"] = True
+            old = prev_status.get("fred") or {}
+            macro_status["last_success_at"] = old.get("last_success_at") or (old.get("fetched_at") if old.get("ok") else None)
+        elif macro:
+            macro_status["last_success_at"] = macro_status.get("fetched_at")
     else:
         macro = previous.get("macro")
         macro_status = mark_reused(prev_status.get("fred"), MACRO_REFRESH_SEC)
 
     coins = []
+    symbols = Counter((c.get("symbol") or "").upper() for c in markets)
+    social = {sym: value for sym, value in social.items() if symbols[sym] == 1}
     seen_ids = set()
     invalid = 0
     for i, c in enumerate(markets):
@@ -371,7 +392,7 @@ def build():
         "social_enabled": bool(LUNAR_KEY),
         "status": {
             "coingecko_markets": {"ok": True, "raw": len(markets), "valid": len(coins),
-                                  "invalid": invalid, "fetched_at": utc_now()},
+                                  "invalid": invalid, "fetched_at": markets_fetched_at},
             "coingecko_global": global_status,
             "lunarcrush": social_status,
             "fred": macro_status,

@@ -1,138 +1,72 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<title>Orbit2 - crypto heatmap</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbit2 - your crypto watchlist</title>
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self' data:; object-src 'none'; worker-src 'none'; frame-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
-<!-- privacy-first: no remote fonts, no tracker, no third-party request -->
 <link rel="icon" href="orbit.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="app.css?v=orbit2-experience-1">
+<script src="core.js?v=orbit2-experience-1" defer></script>
+<script src="app.js?v=orbit2-experience-1" defer></script>
 </head>
 <body>
 <div id="shell">
-  <div id="tint"></div>
-  <header>
-    <div class="bar1">
-      <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
-          <circle class="mark-halo" cx="24" cy="24" r="19"/>
-          <circle class="mark-core" cx="24" cy="24" r="5.8"/>
-          <ellipse class="mark-ring main" cx="24" cy="24" rx="18" ry="8.6" transform="rotate(-24 24 24)"/>
-          <ellipse class="mark-ring ghost" cx="24" cy="24" rx="18" ry="8.6" transform="rotate(24 24 24)"/>
-          <circle class="mark-sat" cx="39" cy="15" r="3.1"/>
-        </svg>
-        <h1>Orbit2</h1><span class="tag" id="updated">loading</span>
-      </div>
-      <div class="macro" id="macro"></div>
-      <div class="hbtns">
-        <button class="icobtn" id="searchBtn" title="Search my coins">
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-        </button>
-        <button class="pickbtn" id="pickBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> My coins <span class="badge" id="selBadge">0</span></button>
+  <header class="app-header">
+    <div class="topbar">
+      <a class="brand" href="./" aria-label="Orbit2 home"><img src="orbit.svg" width="34" height="34" alt=""><h1>Orbit<span>2</span></h1></a>
+      <span class="wordmark-note">by l0g Lab</span>
+      <div id="marketSummary" class="market-summary"></div>
+      <div class="header-actions">
+        <button class="icon-button" id="manageBtn" title="Manage watchlist" aria-label="Manage watchlist"><img class="icon" src="icons/plus.svg" alt=""></button>
+        <button class="icon-button" id="fullscreenBtn" title="Full screen" aria-label="Full screen"><img class="icon" src="icons/maximize.svg" alt=""></button>
+        <button class="icon-button" id="settingsBtn" title="Watchlist settings" aria-label="Watchlist settings"><img class="icon" src="icons/sliders-horizontal.svg" alt=""></button>
       </div>
     </div>
-    <div class="bar2">
-      <div class="viewseg" id="viewSeg">
-        <button data-v="fav" class="on">Watchlist <span id="favCount">0</span></button>
-        <button data-v="top">Market</button>
-      </div>
-      <div class="seg" id="seg">
-        <div class="pill"></div>
-        <button data-tf="1h">1H</button>
-        <button data-tf="24h" class="on">24H</button>
-        <button data-tf="7d">7D</button>
-        <button data-tf="30d">30D</button>
-      </div>
-      <div class="chips" id="chips">
-        <button class="chip on" data-f="all">All</button>
-        <button class="chip signal" data-f="div">Divergences</button>
-        <button class="chip signal" data-f="anom">Anomalies</button>
-        <button class="chip" data-f="gainers">Gainers</button>
-        <button class="chip" data-f="losers">Losers</button>
-        <button class="chip size perf" id="sizeBtn">△ perf</button>
-      </div>
-      <div class="subline" id="subline"></div>
+    <div class="toolbar" id="toolbar">
+      <div class="segments" id="viewControl" aria-label="View"><button data-view="fav" aria-pressed="true">Watchlist <span id="watchCount">0</span></button><button data-view="market" aria-pressed="false">Market</button></div>
+      <div class="segments periods" id="periodControl" aria-label="Performance period"><button data-tf="1h">1H</button><button data-tf="24h">24H</button><button data-tf="7d">7D</button><button data-tf="30d">30D</button></div>
+      <label class="select-label">Show<select id="filterSelect"><option value="all">All coins</option><option value="divergence">Divergences</option><option value="anomaly">Anomalies</option><option value="gainers">Gainers</option><option value="losers">Losers</option></select></label>
+      <label class="select-label">Size<select id="sizeSelect"><option value="perf">Performance</option><option value="market_cap">Market cap</option><option value="total_volume">Volume</option></select></label>
+      <button id="signalsToggle" class="signals-toggle" aria-controls="signalsPanel" aria-expanded="true"><img class="icon" src="icons/panel-right.svg" alt="">Signals <span id="signalCount">0</span></button>
     </div>
   </header>
-
-  <div id="stage">
-    <canvas id="map"></canvas>
-    <div id="status"><div class="spin"></div>loading snapshot...</div>
-    <div id="empty">
-      <div class="welcome">
-        <div class="welcome-copy">
-          <div class="welcome-lockup" aria-hidden="true">
-            <svg class="hero-mark" viewBox="0 0 72 72">
-              <circle class="mark-halo" cx="36" cy="36" r="28"/>
-              <circle class="mark-core" cx="36" cy="36" r="8.5"/>
-              <ellipse class="mark-ring main" cx="36" cy="36" rx="28" ry="13.5" transform="rotate(-24 36 36)"/>
-              <ellipse class="mark-ring ghost" cx="36" cy="36" rx="28" ry="13.5" transform="rotate(24 36 36)"/>
-              <circle class="mark-sat" cx="59" cy="22" r="4.3"/>
-            </svg>
-            <div><b>Orbit2</b><span>Crypto signal map</span></div>
-          </div>
-          <p class="eyebrow">Watchlist first</p>
-          <h2>Track the coins that deserve your attention.</h2>
-          <p class="lead">A private watchlist heatmap for performance, cross-market divergences and unusual moves. Less noise, more signal.</p>
-          <div class="welcome-proof" aria-hidden="true">
-            <span><b>50</b> assets max</span>
-            <span><b>30s</b> crypto cadence</span>
-            <span><b>0</b> third parties</span>
-          </div>
-          <div class="welcome-actions">
-            <button id="emptyPick">Build my watchlist</button>
-            <span>stored locally · same-origin data</span>
-          </div>
-        </div>
-        <div class="welcome-signal" aria-hidden="true">
-          <div class="signal-head"><span>Orbit2 signal stack</span><b>Same-origin feed</b></div>
-          <div class="signal-chart">
-            <span class="chart-line"></span>
-            <i class="p1"></i>
-            <i class="p2"></i>
-            <i class="p3"></i>
-            <i class="p4"></i>
-          </div>
-          <div class="signal-row hot"><i></i><div><b>Divergence</b><span>price vs social / activity</span></div><em>ACC / EXH</em></div>
-          <div class="signal-row"><i></i><div><b>Anomaly</b><span>moves beyond peer range</span></div><em>&gt;2σ</em></div>
-          <div class="signal-row cool"><i></i><div><b>Heatmap size</b><span>performance, cap or volume</span></div><em>△</em></div>
-        </div>
+  <main id="workspace" class="workspace">
+    <section id="welcome" class="welcome" aria-labelledby="welcomeTitle" hidden>
+      <p class="eyebrow">Your market. Your selection.</p>
+      <h2 id="welcomeTitle">Your watchlist</h2>
+      <div class="selection-heading"><span id="welcomeCount">0 of 50 selected</span><button id="homeImport" class="text-button">Import watchlist</button></div>
+      <label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="welcomeSearch" type="search" maxlength="80" placeholder="Find a coin" aria-label="Find a coin" autocomplete="off" spellcheck="false"></label>
+      <div id="welcomeResults" class="coin-results"></div>
+      <button id="finishWelcome" class="primary" disabled>Open watchlist <img class="icon" src="icons/arrow-right.svg" alt=""></button>
+      <p class="local-note">On this device only. No account.</p>
+    </section>
+    <section class="map-section" aria-label="Crypto performance heatmap">
+      <div class="map-heading"><div><h2 id="mapTitle">Watchlist</h2><span id="mapSummary"></span></div><span id="marketAge" class="source-age">Waiting for data</span></div>
+      <div id="stage">
+        <canvas id="map" aria-hidden="true"></canvas>
+        <div id="tileButtons" class="tile-buttons" aria-label="Assets"></div>
+        <div id="mapMessage" class="map-message" role="status"><img src="orbit.svg" width="66" height="66" alt=""><h3 id="mapMessageTitle">Loading market data</h3><p id="mapMessageBody"></p><button id="resetFilter" class="secondary" hidden>Show all coins</button></div>
+        <div id="tileTooltip" role="tooltip" hidden></div>
       </div>
-    </div>
-    <div class="legend"><span>down</span><div class="bar"></div><span>up</span></div>
-  </div>
+      <div class="map-footer"><span id="periodCaption">24-hour performance</span><span class="legend"><span>Down</span><i></i><span>Up</span></span></div>
+    </section>
+    <aside id="signalsPanel" class="signals-panel" aria-labelledby="signalsTitle">
+      <div class="panel-heading"><div><p class="eyebrow">In your watchlist</p><h2 id="signalsTitle">Signals <span id="panelCount">0</span></h2></div><button id="closeSignals" class="icon-button" title="Hide signals" aria-label="Hide signals"><img class="icon" src="icons/x.svg" alt=""></button></div>
+      <p id="signalContext" class="panel-context"></p>
+      <div id="signalList" class="signal-list"></div>
+      <div class="data-status"><h3>Data sources</h3><div id="sourceStatus"></div><button id="methodBtn" class="text-button">How signals are calculated <img class="icon" src="icons/external-link.svg" alt=""></button></div>
+    </aside>
+  </main>
+  <footer class="app-footer"><a href="https://l0g.fr/" rel="noopener">l0g Lab</a><span>Private by design</span><a href="legal/">Legal &amp; privacy</a><a href="https://github.com/bluetouff/orbit" rel="noopener">Source / MIT</a><span id="connectionStatus" role="status"></span></footer>
 </div>
-
-<footer class="legalbar" aria-label="Legal links">
-  <a href="https://l0g.fr/" rel="noopener">l0g Lab</a>
-  <a href="legal/">Legal &amp; GDPR</a>
-  <span>No trackers · same-origin data</span>
-</footer>
-
-<div class="scrim" id="scrim"></div>
-<div class="sheet" id="sheet"></div>
-<div id="toast"></div>
-
-<div class="over" id="picker"><div class="card">
-  <div class="hd"><h3>My coins</h3><button class="done" id="pickDone">Done</button></div>
-  <div class="sb"><input id="pickInput" placeholder="search the universe..." autocomplete="off" autocapitalize="none" inputmode="search" maxlength="80" spellcheck="false"></div>
-  <div class="meta"><span id="pickCount">0 selected</span><span id="pickUniv">universe: -</span></div>
-  <div class="pickctl">
-    <button class="favtog" id="favTog"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 17l-5.3 2.6 1.1-6L3.4 9.4l6-.8z"/></svg> favorites</button>
-    <div class="pager" id="pickPager"></div>
-  </div>
-  <div class="list" id="pickList"></div>
-</div></div>
-
-<div class="over" id="search"><div class="card">
-  <div class="hd"><h3>Jump to</h3><button class="done" id="searchDone">Close</button></div>
-  <div class="sb"><input id="searchInput" placeholder="in my list..." autocomplete="off" autocapitalize="none" inputmode="search" maxlength="80" spellcheck="false"></div>
-  <div class="list" id="searchList"></div>
-</div></div>
-
-<script src="app.js" defer></script>
+<dialog id="manageDialog" aria-labelledby="manageTitle"><div class="dialog-heading"><h2 id="manageTitle">Your coins</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="manageSearch" type="search" maxlength="80" placeholder="Find a coin" aria-label="Search coins" autocomplete="off"></label><div class="selection-heading"><span id="manageCount"></span><label class="checkbox-label"><input type="checkbox" id="selectedOnly">Selected only</label></div><div id="manageResults" class="coin-results"></div><button id="moreCoins" class="text-button" hidden>More coins</button><button class="primary" data-close>Done</button></dialog>
+<dialog id="assetDialog" aria-labelledby="assetTitle"><div class="dialog-heading"><div id="assetIdentity"></div><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><div id="assetContent"></div></dialog>
+<dialog id="settingsDialog" aria-labelledby="settingsTitle"><div class="dialog-heading"><h2 id="settingsTitle">Watchlist settings</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><button id="exportBtn" class="setting-command"><img class="icon" src="icons/download.svg" alt=""><span>Export watchlist<small>Coins and display preferences</small></span></button><button id="importBtn" class="setting-command"><img class="icon" src="icons/upload.svg" alt=""><span>Import watchlist<small>From an Orbit2 JSON file</small></span></button><p class="local-note">Your file is read on this device and is never uploaded.</p></dialog>
+<input id="importFile" type="file" accept=".json,application/json" hidden>
+<dialog id="importDialog" aria-labelledby="importTitle"><div class="dialog-heading"><h2 id="importTitle">Import watchlist</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><p id="importSummary"></p><fieldset><legend>Selection</legend><label><input type="radio" name="importMode" value="merge" checked> Merge with my coins</label><label><input type="radio" name="importMode" value="replace"> Replace my selection</label></fieldset><p id="importWarning" role="status"></p><button id="confirmImport" class="primary">Import</button></dialog>
+<dialog id="methodDialog" aria-labelledby="methodTitle"><div class="dialog-heading"><h2 id="methodTitle">Signal methodology</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><div class="prose"><h3>A common reference</h3><p>All assets with a valid return in the current market snapshot form the reference, including stablecoins. Changing your watchlist or filtering the map does not change this reference. At least 20 valid observations are required.</p><h3>Anomalies</h3><p>A return more than two population standard deviations above or below the reference mean is highlighted. A 24-hour volume-to-market-cap ratio is also highlighted above two standard deviations, after a log10(1 + 1000 × ratio) transformation.</p><h3>Divergences</h3><p>On the 24H view only, the price and activity z-scores are compared. An absolute difference above 1.2 is highlighted. Activity uses 24-hour volume; it is not compared with other return periods. These are heuristic thresholds, not probabilities or evidence of accumulation.</p><h3>Sources and limits</h3><p>Market observations come from CoinGecko. LunarCrush readings are separate context and do not determine these signals. FRED observations have their own publication dates. Extreme outliers and the composition of the reference can affect the result. This compares different assets at one moment, not an asset against its own history.</p><p>Signals are suppressed when market data is older than three minutes or its age cannot be determined. Assets with a supplied price timestamp older than three minutes are also excluded. Legacy snapshots may only provide a collection time. A zero signal count does not guarantee low risk.</p></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
