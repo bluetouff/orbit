@@ -1,4 +1,7 @@
-# Deploying Orbit on l0g.fr (snapshot architecture)
+# Deploying Orbit2 on l0g.fr (snapshot architecture)
+
+Orbit2 retains the existing `orbit` service names and filesystem paths.
+Changing the repository or product name does not deploy anything by itself.
 
 Same pattern as yct/us/euro/energy: a systemd timer regenerates a static JSON
 snapshot outside the web root, Apache serves static files, the browser contacts
@@ -51,7 +54,7 @@ sudo install -o root -g root -m 0644 web/app.js     /var/www/html/orbit/app.js
 sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/html/orbit/orbit.svg
 sudo install -d -m 755 /var/www/html/orbit/legal
 sudo install -o root -g root -m 0644 web/legal/index.html /var/www/html/orbit/legal/index.html
-# Do NOT copy web/data.json to prod: it is the demo sample.
+# Do NOT copy local web/data.json to prod: use the server-generated snapshot.
 ```
 
 ---

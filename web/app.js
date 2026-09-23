@@ -1,8 +1,8 @@
 "use strict";
 const TF={'1h':'price_change_percentage_1h_in_currency','24h':'price_change_percentage_24h_in_currency',
   '7d':'price_change_percentage_7d_in_currency','30d':'price_change_percentage_30d_in_currency'};
-const state={tf:'24h',metric:'perf',filter:'all',lens:'perf',demo:false,universe:[],byId:new Map(),selected:new Set(),view:'fav',
-  global:null,macro:{dxy:104.2,us10y:4.32,proxy:true},anomCount:0,divCount:0,accumCount:0,exhaustCount:0,regime:{label:'NEUTRAL',score:0},
+const state={tf:'24h',metric:'perf',filter:'all',lens:'perf',universe:[],byId:new Map(),selected:new Set(),view:'fav',
+  global:null,anomCount:0,divCount:0,accumCount:0,exhaustCount:0,regime:{label:'NEUTRAL',score:0},
   social:{},macroLive:null,snapshot:null,snapshotMs:null,providerStatus:null};
 
 // --- favorites: capped, persisted client-side (localStorage). No account, no server. ---
@@ -16,6 +16,7 @@ function safeText(v,max){
 }
 function safeQuery(v){return safeText(v,MAX_QUERY).toLowerCase();}
 function safeNum(v,lo=-Infinity,hi=Infinity){
+  if((typeof v!=='number'&&typeof v!=='string')||(typeof v==='string'&&!v.trim()))return null;
   const n=Number(v);
   return Number.isFinite(n)&&n>=lo&&n<=hi?n:null;
 }
@@ -35,9 +36,9 @@ function normalizeGlobal(g){
   const eth=safeNum(g.market_cap_percentage&&g.market_cap_percentage.eth,0,100);
   const chg=safeNum(g.market_cap_change_percentage_24h_usd,-100,100);
   return {
-    total_market_cap:{usd:cap==null?0:cap},
+    total_market_cap:{usd:cap},
     market_cap_percentage:{btc:btc==null?null:btc,eth:eth==null?null:eth},
-    market_cap_change_percentage_24h_usd:chg==null?0:chg
+    market_cap_change_percentage_24h_usd:chg
   };
 }
 function normalizeMacro(m){
@@ -151,16 +152,14 @@ function fmtAge(ms){
   return h+'h'+(m?(' '+m+'m'):'');
 }
 function snapshotFreshness(){
-  if(state.demo)return {label:'demo',cls:'demo',age:null};
   const age=state.snapshotMs?Date.now()-state.snapshotMs:null;
   const stale=age==null||age>3*60*1000;
   return {label:stale?'stale':'fresh',cls:stale?'stale':'fresh',age};
 }
 function sourceSummary(){
-  if(state.demo)return 'demo sources';
   const s=state.providerStatus||{};
   const social=(s.lunarcrush&&s.lunarcrush.ok)||Object.keys(state.social).length?'LC ticker':'activity proxy';
-  const macro=(s.fred&&s.fred.ok)||state.macroLive?'FRED':'macro proxy';
+  const macro=(s.fred&&s.fred.ok)||state.macroLive?'FRED':'macro unavailable';
   return 'CG · '+social+' · '+macro;
 }
 function updateUpdated(){
@@ -197,14 +196,20 @@ async function loadData(first){
     state.providerStatus=d.status||null;
     state.social={}; d.coins.forEach(c=>{ if(c.galaxy_score!=null)
       state.social[(c.symbol||'').toUpperCase()]={galaxy_score:c.galaxy_score,sentiment:c.sentiment,social_dominance:c.social_dominance,source:c.social_source}; });
-    state.demo=false; document.getElementById('demoflag').style.display='none';
+    document.getElementById('status').style.display='none';
     document.getElementById('pickUniv').textContent='universe: '+d.coins.length;
     updateUpdated();
   }catch(e){
-    if(first){ state.demo=true; document.getElementById('demoflag').style.display='block';
-      state.snapshot=null; state.snapshotMs=null; state.providerStatus=null; updateUpdated();
-      state.universe=DEMO; state.byId=new Map(DEMO.map(c=>[c.id,c])); state.global=DEMO_GLOBAL;
-      document.getElementById('pickUniv').textContent='universe: '+DEMO.length; }
+    if(first){
+      state.snapshot=null; state.snapshotMs=null; state.providerStatus=null;
+      document.getElementById('pickUniv').textContent='universe: unavailable';
+    }
+    if(!state.universe.length){
+      const status=document.getElementById('status');
+      status.textContent='Market data is unavailable. Retrying automatically.';
+      status.style.display='block';
+    }
+    updateUpdated();
   }
 }
 function socialOf(c){return c&&c.symbol?state.social[c.symbol.toUpperCase()]:null;}
@@ -257,7 +262,7 @@ function computeRegime(coins){
 const REFRESH_MS=30000, REFRESH_JITTER_MS=15000; // crypto markets ~30 s; jitter avoids herd refreshes
 let _busy=false;
 async function refreshData(){
-  if(state.demo||_busy||document.visibilityState==='hidden')return; _busy=true;
+  if(_busy||document.visibilityState==='hidden')return; _busy=true;
   try{
     await loadData(false);
     updateUpdated();
@@ -299,7 +304,7 @@ function squarify(items,rect){
 function layout(){
   computeSignals();
   const list=selectedCoins();
-  const showEmpty=state.view==='fav'&&state.selected.size===0;
+  const showEmpty=state.universe.length>0&&state.view==='fav'&&state.selected.size===0;
   document.getElementById('empty').style.display=showEmpty?'flex':'none';
   document.getElementById('shell').classList.toggle('is-empty',showEmpty);
   if(!list.length){tiles.clear();return;}
@@ -484,7 +489,7 @@ async function openSheet(c){
     <div class="cell"><div class="k">ATH</div><div class="v">${fmtPrice(c.ath)}</div></div>
     <div class="cell"><div class="k">Circ. supply</div><div class="v">${c.circulating_supply?(c.circulating_supply/1e6).toFixed(1)+'M':'—'}</div></div>
   </div>
-  <div class="signal-hero ${sigKind}"><div class="top"><span>Signal Orbit</span><b>${sigTitle}</b></div>
+  <div class="signal-hero ${sigKind}"><div class="top"><span>Orbit2 signal</span><b>${sigTitle}</b></div>
     <p>${sigBody}</p></div>
   <div class="social"><div class="top"><span>${socTop}</span><span class="src">${socSrc}</span></div>
     <div class="gauge"><i id="gaugeFill"></i></div>
@@ -620,7 +625,7 @@ function renderSearch(q){q=safeQuery(q);
 function renderStrip(){
   const g=state.global,r=state.regime;
   const cap=g&&g.total_market_cap?fmtBig(g.total_market_cap.usd):'—';
-  const capChg=g?(g.market_cap_change_percentage_24h_usd||0):0;
+  const capChg=g?g.market_cap_change_percentage_24h_usd:null;
   const btcD=g&&g.market_cap_percentage?g.market_cap_percentage.btc:null;
   const ethD=g&&g.market_cap_percentage?g.market_cap_percentage.eth:null;
   const rc=r.label==='RISK-ON'?'on':r.label==='RISK-OFF'?'off':'neu';
@@ -632,21 +637,20 @@ function renderStrip(){
       (m.usd?`<span>USD <b>${(+m.usd.value).toFixed(1)}</b>${arr(m.usd.change)}</span>`:'')+
       (m.us10y?`<span>10Y <b>${(+m.us10y.value).toFixed(2)}%</b>${arr(m.us10y.change)}</span>`:'');
   }else{
-    macroHtml=
-      `<span class="px">DXY <b>${state.macro.dxy.toFixed(1)}</b><sup>ᵖ</sup></span>`+
-      `<span class="px">10Y <b>${state.macro.us10y.toFixed(2)}%</b><sup>ᵖ</sup></span>`;
+    macroHtml='<span class="px">Macro unavailable</span>';
   }
   document.getElementById('macro').innerHTML=
     `<span class="regime ${rc}">${r.label}</span>`+
-    `<span>Cap <b>${cap}</b> <i class="${capChg>=0?'up':'dn'}">${fmtPct(capChg)}</i></span>`+
+    `<span>Cap <b>${cap}</b> <i class="${perfClass(capChg)}">${fmtPct(capChg)}</i></span>`+
     `<span>BTC.D <b>${btcD!=null?btcD.toFixed(1)+'%':'—'}</b></span>`+
     `<span>ETH.D <b>${ethD!=null?ethD.toFixed(1)+'%':'—'}</b></span>`+
     macroHtml;
   const sel=displaySource();
-  const avg=sel.length?sel.reduce((s,c)=>s+(c[TF[state.tf]]||0),0)/sel.length:null;
+  const moves=sel.map(c=>c[TF[state.tf]]).filter(Number.isFinite);
+  const avg=moves.length?moves.reduce((s,p)=>s+p,0)/moves.length:null;
   const avgCls=avg==null?'perf-flat':(avg>=0?'up':'dn');
   const fresh=snapshotFreshness();
-  const dataAge=state.demo?'demo':fmtAge(fresh.age);
+  const dataAge=fmtAge(fresh.age);
   const divLabel=state.divCount+' div';
   const anomLabel=state.anomCount+' anom';
   const divChip=chips.querySelector('.chip[data-f="div"]');if(divChip)divChip.textContent='Divergences '+state.divCount;
@@ -675,37 +679,10 @@ async function boot(){
   state.view='fav';
   updateFavUI();
   document.getElementById('viewSeg').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v==='fav'));
-  document.getElementById('status').style.display='none';
+  document.getElementById('status').style.display=state.universe.length?'none':'block';
   layout();renderStrip();movePill();draw();
   updateUpdated();
 }
 document.querySelectorAll('#viewSeg button').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.v)));
 boot();
 scheduleRefresh();
-
-function D(id,sym,name,price,mc,vol,c1,c24,c7,c30,rank){return{id,symbol:sym,name,current_price:price,market_cap:mc,total_volume:vol,market_cap_rank:rank,
-  image:'',ath:price*1.8,circulating_supply:mc/price,
-  price_change_percentage_1h_in_currency:c1,price_change_percentage_24h_in_currency:c24,price_change_percentage_7d_in_currency:c7,price_change_percentage_30d_in_currency:c30};}
-const DEMO_GLOBAL={total_market_cap:{usd:3.34e12},total_volume:{usd:1.4e11},market_cap_percentage:{btc:54.2,eth:11.8},market_cap_change_percentage_24h_usd:1.6};
-const DEMO=[
-  D('bitcoin','btc','Bitcoin',97400,1.92e12,38e9,0.3,2.4,-1.2,8.6,1),D('ethereum','eth','Ethereum',3420,4.1e11,18e9,0.6,3.8,2.1,-4.3,2),
-  D('tether','usdt','Tether',1,1.4e11,62e9,0,0.01,-0.02,0.01,3),D('solana','sol','Solana',198,9.3e10,4.2e9,-0.8,6.7,9.4,22.1,4),
-  D('binancecoin','bnb','BNB',612,8.8e10,1.9e9,0.2,-1.1,3.3,5.5,5),D('ripple','xrp','XRP',2.31,1.3e11,6.1e9,1.1,12.4,-3.8,41.2,6),
-  D('usd-coin','usdc','USDC',1,3.8e10,9e9,0,0,0,0,7),D('cardano','ada','Cardano',0.92,3.2e10,1.1e9,-0.4,-4.2,-7.1,12.8,8),
-  D('dogecoin','doge','Dogecoin',0.38,5.5e10,3.4e9,2.1,15.6,-12.3,28.4,9),D('avalanche-2','avax','Avalanche',42,1.6e10,720e6,-1.2,5.1,4.4,-9.2,10),
-  D('tron','trx','TRON',0.24,2.1e10,880e6,0.1,1.2,2.8,6.1,11),D('chainlink','link','Chainlink',23.4,1.4e10,650e6,0.9,7.8,11.2,3.4,12),
-  D('polkadot','dot','Polkadot',7.8,1.1e10,420e6,-0.6,-2.1,-5.4,-1.2,13),D('the-open-network','ton','Toncoin',5.6,1.4e10,310e6,0.4,3.3,-1.8,14.7,14),
-  D('shiba-inu','shib','Shiba Inu',0.000026,1.5e10,890e6,1.8,9.2,-14.1,19.3,15),D('matic-network','matic','Polygon',0.58,5.8e9,340e6,-0.3,-6.7,-9.8,4.2,16),
-  D('litecoin','ltc','Litecoin',103,7.7e9,510e6,0.2,2.1,1.4,-3.1,17),D('uniswap','uni','Uniswap',13.2,7.9e9,290e6,1.4,8.9,6.2,-2.8,18),
-  D('bitcoin-cash','bch','Bitcoin Cash',478,9.4e9,380e6,-0.5,3.6,-2.2,7.9,19),D('internet-computer','icp','Internet Computer',11.4,5.3e9,160e6,0.7,-3.4,-8.1,2.3,20),
-  D('aptos','apt','Aptos',9.1,5.1e9,210e6,-1.1,6.4,13.7,-6.4,21),D('near','near','NEAR Protocol',5.3,6.1e9,330e6,0.5,4.8,7.1,9.8,22),
-  D('pepe','pepe','Pepe',0.000018,7.4e9,1.2e9,3.2,21.4,-18.9,52.1,23),D('render-token','render','Render',7.6,3.9e9,140e6,-0.8,-5.1,-11.2,1.7,24),
-  D('stellar','xlm','Stellar',0.41,1.2e10,420e6,0.6,4.1,-2.9,18.2,25),D('hedera-hashgraph','hbar','Hedera',0.27,1e10,310e6,-0.4,6.8,9.1,33.4,26),
-  D('cosmos','atom','Cosmos',8.4,3.3e9,180e6,-0.7,-3.1,-6.2,-2.1,27),D('filecoin','fil','Filecoin',5.9,3.6e9,220e6,0.3,2.4,-4.8,5.6,28),
-  D('crypto-com-chain','cro','Cronos',0.16,4.3e9,90e6,0.2,1.8,3.2,11.4,29),D('mantle','mnt','Mantle',1.1,3.7e9,120e6,-0.5,7.2,14.1,-3.3,30),
-  D('arbitrum','arb','Arbitrum',0.92,3.5e9,260e6,1.2,9.4,8.7,-1.9,31),D('vechain','vet','VeChain',0.045,3.6e9,140e6,-0.3,-2.8,-5.1,6.7,32),
-  D('optimism','op','Optimism',2.4,3.1e9,210e6,0.8,6.1,10.2,-4.4,33),D('injective-protocol','inj','Injective',28,2.8e9,170e6,-1.4,-6.7,-9.8,2.1,34),
-  D('immutable-x','imx','Immutable',1.7,2.9e9,90e6,1.1,8.4,12.6,7.3,35),D('the-graph','grt','The Graph',0.28,2.7e9,110e6,0.4,3.9,-3.4,4.8,36),
-  D('lido-dao','ldo','Lido DAO',2.1,1.9e9,130e6,-0.6,-4.1,-7.7,1.2,37),D('grass','grass','Grass',0.48,1.2e9,80e6,2.4,11.8,-15.2,24.6,38),
-  D('sui','sui','Sui',3.8,1.1e10,560e6,1.6,9.7,16.4,28.9,39),D('aave','aave','Aave',312,4.7e9,290e6,0.9,5.2,7.8,-2.4,40)
-];
