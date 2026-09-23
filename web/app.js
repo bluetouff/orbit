@@ -59,7 +59,7 @@ function render(){
   const missing=state.view==='fav'?state.selected.size-sourceCoins().length:0;
   $('mapSummary').textContent=t(list.length===1?'{n} coin':'{n} coins',{n:list.length})+(missing?t(' · {n} unavailable',{n:missing}):'')+(returns.length?t(' · mean {value}',{value:pct(returns.reduce((a,b)=>a+b,0)/returns.length)}):'');
   $('periodCaption').textContent=t('{period} performance · USD',{period:t(periods[state.settings.tf])});
-  renderSources();renderSignals();drawMap();renderSelection();
+  renderSources();renderMarketContext();renderSignals();drawMap();renderSelection();
 }
 function renderSelection(){
   $('welcomeCount').textContent=t('{n} of 50 selected',{n:state.selected.size});$('manageCount').textContent=t('{n} / 50 selected',{n:state.selected.size});
@@ -88,6 +88,17 @@ function renderSources(){
     if(key==='lunarcrush'&&s.usable){const n=coins().filter(c=>c.galaxy_score!==null).length;row.append(el('span','source-observation',t('{n} assets covered · context only',{n})));}
     box.append(row);
   }
+}
+function renderMarketContext(){
+  const box=$('marketContext'),m=state.analysis.market;box.replaceChildren();
+  const heading=el('div','context-heading');heading.append(el('h3','','Snapshot context'),el('span','',state.settings.tf.toUpperCase()));box.append(heading);
+  if(!m.available){box.append(el('p','context-note',state.analysis.current?'Insufficient reference coverage':'Market data is not current'));return;}
+  const metrics=el('div','context-metrics');metrics.append(metric('Market median',pct(m.median)),metric('Assets rising',decimal(100*m.up/m.n,1)+'%'));box.append(metrics);
+  const bar=el('div','breadth-bar');bar.setAttribute('role','img');bar.setAttribute('aria-label',t('{up} rising, {flat} unchanged, {down} falling',{up:m.up,flat:m.flat,down:m.down}));
+  for(const [kind,count] of [['rising',m.up],['flat',m.flat],['falling',m.down]]){const part=el('span',kind);part.style.width=(100*count/m.n)+'%';bar.append(part);}
+  box.append(bar,el('p','context-note',t('{n} / {total} assets · stablecoins included',{n:m.n,total:m.total})));
+  const quality=el('p','context-quality'+(m.dated<m.n?' limited':''),t('{dated} / {n} observation times supplied',{dated:m.dated,n:m.n}));
+  quality.title=t('Collection time does not establish when a provider observed a price.');box.append(quality);
 }
 function renderSignals(){
   const list=sourceCoins(),analysis=state.analysis,items=[];
@@ -230,6 +241,17 @@ function renderAssetSignals(c){
   const result=eventsFor(c),section=el('section','asset-signals'),summary=el('div','signal-summary');
   summary.append(el('h3','',result?.available?(result.events.length?t(result.events.length>1?'{n} signals detected':'{n} signal detected',{n:result.events.length}):'No thresholds crossed'):'Signals unavailable'),el('span','',state.settings.tf.toUpperCase()));
   section.append(summary);
+  const comparisons=el('div','asset-comparisons'),relative=result?.relativeBTC;
+  for(const [key,label,value] of [['btc','vs BTC',relative?.value],['median','vs market median',result?.medianGap]]){
+    const item=metric(label,Number.isFinite(value)?key==='btc'?pct(value):(value>=0?'+':'')+decimal(value)+' '+t('pp'):'N/A');item.dataset.comparison=key;
+    item.title=t(key==='btc'?(relative?.reason||'Relative return, not a percentage-point difference.'):'Difference from the market median, in percentage points.');
+    const number=item.querySelector('b');if(Number.isFinite(value))number.classList.add(value>0?'up':value<0?'down':'muted');comparisons.append(item);
+  }
+  section.append(comparisons);
+  const dated=result?.observation==='current',unknownBTC=Number.isFinite(relative?.value)&&!relative.dated;
+  const qualityText=!state.analysis.current?'Market data is not current':dated?(unknownBTC?'Bitcoin observation time unknown':'Dated asset price'):result?.observation==='unknown'?'Collection only · observation time unknown':result?.reason||'Price observation time unavailable';
+  const observationLabel=el('p','comparison-quality'+(!state.analysis.current||!dated||unknownBTC?' limited':''),qualityText);
+  observationLabel.title=t('Collection time does not establish when a provider observed a price.');section.append(observationLabel);
   for(const kind of ['price','activity','divergence']){
     const reading=signalReading(c,kind),row=el('div','signal-reading '+kind+(reading.active?' is-active':''));row.dataset.reading=kind;
     const heading=el('div','reading-heading'),copy=el('div'),value=el('div','reading-value');
@@ -238,7 +260,9 @@ function renderAssetSignals(c){
     heading.append(copy,value);row.append(heading,signalGauge(reading));section.append(row);
   }
   const foot=el('div','signal-footnote');
-  foot.append(el('p','',t('{price} price / {activity} activity peers · CoinGecko',{price:state.analysis.price.n,activity:state.analysis.activity.n})),el('p','',t('Collected {date}',{date:date(state.snapshot.snapshot)})),el('p','', 'Cross-asset comparison, not a buy or sell signal.'));
+  if(c.last_updated)foot.append(el('p','observation-quality',t('Price observed {date}',{date:date(c.last_updated)})));
+  if(relative?.reason)foot.append(el('p','',t('vs BTC')+': '+t(relative.reason)));
+  foot.append(el('p','',t('{price} price / {activity} activity peers · CoinGecko',{price:state.analysis.price.n,activity:state.analysis.activity.n})),el('p','',t('Collected {date}',{date:date(state.snapshot.snapshot)})),el('p','', 'Snapshot comparisons, not independent confirmations or forecasts.'));
   const method=button('Methodology','text-button',()=>openDialog('methodDialog'));method.id='assetMethod';foot.append(method);section.append(foot);
   return section;
 }

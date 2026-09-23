@@ -113,7 +113,20 @@ ignored by Git.
 - The Signals panel lists anomalies and divergences. Each entry opens its inputs,
   threshold, reference size, source, collection time and methodology.
   Asset dialogs open on signed signal gauges; market history and social context
-  remain in a separate keyboard-accessible tab. No threshold or formula changes.
+  remain in a separate keyboard-accessible tab. Existing anomaly thresholds
+  and formulas are unchanged.
+- Snapshot context adds the median return and rising / unchanged / falling
+  asset counts for the selected period, across the usable reference universe.
+  The displayed coverage includes the denominator and dated-observation count.
+  Stale data or fewer than 20 usable returns produce an unavailable state.
+- Each asset shows its relative return against Bitcoin (CoinGecko ID `bitcoin`):
+  `100 * ((100 + asset return %) / (100 + BTC return %) - 1)`.
+  This is not the simple difference of returns. The market-median comparison
+  **is** a difference, labelled in percentage points, not percent.
+  Missing BTC, invalid returns, a BTC return of -100%, or stale observations
+  suppress the BTC comparison. Two supplied timestamps must be at most 60
+  seconds apart. Missing observation times remain explicitly collection-only;
+  they do not establish synchronous quotes. These are context, not new alerts.
 - The reference includes all valid assets in the snapshot, including stablecoins,
   not just the visible watchlist. At least 20 valid observations are required.
 - Price anomalies use absolute population z-scores above 2. Activity anomalies
@@ -123,17 +136,25 @@ ignored by Git.
 - Signals stop when market collection age is unknown or exceeds three minutes.
   Supplied asset observation timestamps are checked separately. Old snapshots
   without asset timestamps retain an explicit collection-only limitation.
+  A malformed supplied timestamp is rejected, not treated as missing.
 - LunarCrush is separate context, never a substitute activity axis. Ambiguous
   symbols are discarded by the builder; remaining symbol matches are indicative.
   FRED observation dates are separate from collection times.
 - Display preferences use `orbit.settings.v2`. JSON import/export stays local;
   imports are bounded to 16 KB / 50 coins and require merge or replace confirmation.
+- No signal history, visitor identifier or analytics is stored. Calculations
+  use only the current snapshot in memory; local storage remains limited to
+  favorites, display settings and language. No cookies are introduced.
 - Asset buttons support keyboard focus, arrow navigation, Enter and native
   dialog dismissal. The UI respects zoom and does not run continuous animation.
 
 No signal is a probability, a trading recommendation or evidence of accumulation.
 Browser polling does not change provider cadence. Production timer and provider
 plan limits must be checked independently before changing collection frequency.
+CoinGecko's [market endpoint contract](https://docs.coingecko.com/reference/coins-markets)
+documents the return horizons and `last_updated` field. This field is an upstream
+update timestamp, not proof that every constituent exchange traded at that moment.
+There is no backtest or independently calibrated predictive-confidence score.
 
 ## Checks
 

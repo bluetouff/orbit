@@ -31,6 +31,7 @@
       for (const k of ['galaxy_score','sentiment','social_dominance']) o[k]=num(c[k],0,100);
       o.social_source=text(c.social_source,40);
       o.last_updated=time(c.last_updated)!==null?text(c.last_updated,40):null;
+      o.observationInvalid=c.last_updated!=null&&o.last_updated===null;
       o.spark=Array.isArray(c.spark)?c.spark.slice(0,240).map(v=>num(v,0)).filter(v=>v!==null):[];
       ids.add(id);coins.push(o);
     }
@@ -72,24 +73,60 @@
     const sd=n?Math.sqrt(values.reduce((a,b)=>a+(b-mean)**2,0)/n):null;
     return {n,mean,sd};
   }
+  function observation(c,now) {
+    if(c.observationInvalid) return 'invalid';
+    if(!c.last_updated) return 'unknown';
+    const stamp=time(c.last_updated);
+    if(stamp===null) return 'invalid';
+    return now-stamp>=-60000&&now-stamp<=180000?'current':'stale';
+  }
+  function relativeBitcoin(c,btc,key,current,now) {
+    const result={value:null,reason:null,dated:false};
+    if(!current) result.reason='Market data is not current';
+    else if(!btc) result.reason='Bitcoin is absent from the snapshot';
+    else if([c,btc].some(coin=>!['current','unknown'].includes(observation(coin,now)))) result.reason='Asset or Bitcoin observation is invalid or stale';
+    else if(!Number.isFinite(c[key])||!Number.isFinite(btc[key])||btc[key]<=-100) result.reason='Comparable returns unavailable';
+    else {
+      result.dated=[c,btc].every(coin=>observation(coin,now)==='current');
+      if(result.dated&&Math.abs(time(c.last_updated)-time(btc.last_updated))>60000) result.reason='Observation times differ by more than one minute';
+      else {
+        // Relative wealth ratio, not the percentage-point difference of returns.
+        const value=100*((100+c[key])/(100+btc[key])-1);
+        if(Number.isFinite(value)) result.value=value;
+        else result.reason='Comparable returns unavailable';
+      }
+    }
+    return result;
+  }
   function analyze(snapshot,tf='24h',now=Date.now()) {
+    if(!Object.hasOwn(TF,tf)) tf='24h';
     const coins=snapshot?.coins || [],key=TF[tf]||TF['24h'];
     const current=sourceState(snapshot,'coingecko_markets',now).usable;
-    const observed=c=>!c.last_updated || (now-time(c.last_updated)>=-60000 && now-time(c.last_updated)<=180000);
+    const observed=c=>['current','unknown'].includes(observation(c,now));
     const peers=coins.filter(c=>observed(c)&&Number.isFinite(c[key]));
     const price=stats(peers.map(c=>c[key]));
+    const sorted=peers.map(c=>c[key]).sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);
+    const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:coins.length,
+      dated:peers.filter(c=>observation(c,now)==='current').length,median:null,up:null,down:null,flat:null};
+    if(market.available) {
+      market.median=sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
+      market.up=sorted.filter(v=>v>0).length;market.down=sorted.filter(v=>v<0).length;market.flat=sorted.length-market.up-market.down;
+    }
+    const btc=coins.find(c=>c.id==='bitcoin');
     const turnover=c=>{const value=c.market_cap>0&&Number.isFinite(c.total_volume)?Math.log10(1+c.total_volume/c.market_cap*1000):NaN;return Number.isFinite(value)?value:null;};
     const activityPeers=peers.filter(c=>turnover(c)!==null);
     const activity=stats(activityPeers.map(turnover));
     const byId=new Map();
     for(const c of coins) {
-      const result={events:[],priceZ:null,activityZ:null,divergence:null,score:0,available:false,reason:null};
+      const result={events:[],priceZ:null,activityZ:null,divergence:null,score:0,available:false,reason:null,
+        observation:observation(c,now),relativeBTC:relativeBitcoin(c,btc,key,current,now),medianGap:null};
       byId.set(c.id,result);
       if(!current) {result.reason='Market data is not current';continue;}
-      if(!observed(c)) {result.reason='Asset price is stale';continue;}
+      if(!observed(c)) {result.reason=result.observation==='invalid'?'Asset observation time is invalid':'Asset price is stale';continue;}
       if(!Number.isFinite(c[key])) {result.reason='Return unavailable for this period';continue;}
       if(price.n<MIN_PEERS) {result.reason='Insufficient reference coverage';continue;}
       result.available=true;
+      result.medianGap=c[key]-market.median;
       result.priceZ=price.sd>0?(c[key]-price.mean)/price.sd:0;
       if(Math.abs(result.priceZ)>2) result.events.push({kind:'price',label:result.priceZ>0?'Unusual rise':'Unusual decline',score:Math.abs(result.priceZ)});
       // Turnover is a 24h observation. Never compare it with a 1h/7d/30d return.
@@ -105,7 +142,7 @@
       }
       result.score=Math.max(0,...result.events.map(e=>e.score));
     }
-    return {byId,price,activity,tf,referenceCount:coins.length,current,minPeers:MIN_PEERS};
+    return {byId,price,activity,market,tf,referenceCount:coins.length,current,minPeers:MIN_PEERS};
   }
   function settings(value) {
     const s={...DEFAULTS};

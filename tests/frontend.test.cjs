@@ -102,3 +102,77 @@ test('logos and returns scale with tile size without a desktop size cap',()=>{
   }
   assert.ok(wide.logo<120);
 });
+
+test('market median and breadth count every usable return, including unchanged assets',()=>{
+  const r=raw(20);r.coins.forEach((c,i)=>{c[C.TF['24h']]=i-9;c.last_updated=stamp;});
+  const a=C.analyze(C.normalizeSnapshot(r),'24h',now);
+  assert.deepEqual(a.market,{available:true,n:20,total:20,dated:20,median:0.5,up:10,down:9,flat:1});
+  assert.equal(a.byId.get('asset-0').medianGap,-9.5);
+  r.coins.push({...r.coins[0],id:'twenty-first',[C.TF['24h']]:11});
+  assert.equal(C.analyze(C.normalizeSnapshot(r),'24h',now).market.median,1);
+});
+test('market context is unavailable, not neutral, when stale or coverage is insufficient',()=>{
+  for(const [r,at]of [[raw(19),now],[raw(),now+180001]]){
+    const a=C.analyze(C.normalizeSnapshot(r),'24h',at);
+    assert.equal(a.market.available,false);
+    for(const key of ['median','up','down','flat'])assert.equal(a.market[key],null);
+    assert.ok([...a.byId.values()].every(r=>r.medianGap===null));
+  }
+});
+test('invalid supplied dates cannot fall back to collection-only eligibility',()=>{
+  const r=raw();r.coins[0].last_updated='not-a-date';r.coins[1].last_updated='';r.coins[2].last_updated=stamp;
+  const a=C.analyze(C.normalizeSnapshot(r),'24h',now);
+  assert.equal(a.price.n,38);assert.equal(a.market.dated,1);
+  assert.equal(a.byId.get('asset-0').reason,'Asset observation time is invalid');
+  assert.equal(a.byId.get('asset-1').available,false);
+  assert.equal(a.byId.get('asset-3').observation,'unknown');
+});
+function bitcoinFixture(assetReturn=10,btcReturn=5){
+  const r=raw();r.coins[0].id='ethereum';r.coins[1].id='bitcoin';
+  for(const c of r.coins)c.last_updated=stamp;
+  r.coins[0][C.TF['24h']]=assetReturn;r.coins[1][C.TF['24h']]=btcReturn;
+  return r;
+}
+test('BTC-relative performance is a wealth ratio, not a percentage-point subtraction',()=>{
+  for(const [asset,btc,expected] of [[10,5,100/21],[-20,-10,-100/9],[5,5,0],[-100,5,-100]]){
+    const a=C.analyze(C.normalizeSnapshot(bitcoinFixture(asset,btc)),'24h',now);
+    const result=a.byId.get('ethereum').relativeBTC;
+    assert.ok(Math.abs(result.value-expected)<1e-10);assert.equal(result.dated,true);assert.equal(result.reason,null);
+    assert.equal(a.byId.get('bitcoin').relativeBTC.value,0);
+  }
+});
+test('BTC comparison does not fabricate a benchmark from a symbol or missing return',()=>{
+  for(const mutate of [r=>{r.coins[1].id='other';r.coins[1].symbol='btc';},r=>{r.coins[1][C.TF['24h']]=null;},r=>{r.coins[1][C.TF['24h']]=-100;},r=>{r.coins[0][C.TF['24h']]=null;}]){
+    const r=bitcoinFixture();mutate(r);
+    const result=C.analyze(C.normalizeSnapshot(r),'24h',now).byId.get('ethereum').relativeBTC;
+    assert.equal(result.value,null);assert.ok(result.reason);
+  }
+});
+test('BTC comparison fails closed for stale, invalid, future or misaligned observations',()=>{
+  for(const [index,date,at]of [[0,'2025-12-31T23:50:00Z',now],[1,'broken',now],[1,'2026-01-01T00:01:01Z',now],[1,'2025-12-31T23:58:59Z',now],[1,stamp,now+180001]]){
+    const r=bitcoinFixture();r.coins[index].last_updated=date;
+    const result=C.analyze(C.normalizeSnapshot(r),'24h',at).byId.get('ethereum').relativeBTC;
+    assert.equal(result.value,null);assert.ok(result.reason);
+  }
+  const r=bitcoinFixture();r.coins[1].last_updated='2025-12-31T23:59:00Z';
+  assert.notEqual(C.analyze(C.normalizeSnapshot(r),'24h',now).byId.get('ethereum').relativeBTC.value,null);
+});
+test('legacy collection-only inputs are explicitly distinguished from dated observations',()=>{
+  const r=bitcoinFixture();delete r.coins[1].last_updated;
+  const a=C.analyze(C.normalizeSnapshot(r),'24h',now);
+  assert.equal(a.market.dated,39);assert.equal(a.byId.get('ethereum').relativeBTC.dated,false);
+  assert.notEqual(a.byId.get('ethereum').relativeBTC.value,null);
+});
+test('BTC comparison uses the selected horizon and is independent of anomaly coverage',()=>{
+  const r=bitcoinFixture();r.coins=r.coins.slice(0,2);r.coins[0][C.TF['7d']]=20;r.coins[1][C.TF['7d']]=10;
+  const a=C.analyze(C.normalizeSnapshot(r),'7d',now),result=a.byId.get('ethereum');
+  assert.ok(Math.abs(result.relativeBTC.value-100/11)<1e-10);
+  assert.equal(result.available,false);assert.equal(result.medianGap,null);assert.equal(result.activityZ,null);
+  assert.deepEqual(result.events,[]);
+});
+test('market context and relative comparisons do not mutate inputs or depend on their order',()=>{
+  const s=C.normalizeSnapshot(bitcoinFixture()),before=structuredClone(s),a=C.analyze(s,'24h',now);
+  assert.deepEqual(s,before);
+  const b=C.analyze({...s,coins:[...s.coins].reverse()},'24h',now);
+  assert.deepEqual(a.market,b.market);assert.deepEqual(a.byId.get('ethereum').relativeBTC,b.byId.get('ethereum').relativeBTC);
+});

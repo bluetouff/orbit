@@ -37,6 +37,7 @@ async function main(){
     assert.equal(await page.locator('html').getAttribute('lang'),'fr');assert.equal(await page.locator('#homeIntro').isVisible(),false);
     await page.locator('#homeLink').click();assert.equal(await page.locator('#homeIntro').isVisible(),true);assert.equal(await page.locator('#watchCount').textContent(),'1');
     await page.locator('#buildWatchlist').click();
+    assert.equal(await page.locator('#marketContext .breadth-bar').count(),1);
     for(const lang of ['fr','en']){
       await page.locator(`[data-lang="${lang}"]`).click();
       for(const [width,height]of [[1440,950],[1366,768],[390,844],[320,568]]){
@@ -44,6 +45,8 @@ async function main(){
         const bounds=await page.locator('#assetDialog').evaluate(d=>({overflow:d.scrollWidth>d.clientWidth,scroll:d.scrollTop,last:d.querySelector('[data-reading="divergence"]').getBoundingClientRect().bottom,bottom:d.getBoundingClientRect().bottom,viewport:innerHeight}));
         assert.equal(bounds.overflow,false);assert.equal(bounds.scroll,0);assert.ok(bounds.last<=Math.min(bounds.bottom,bounds.viewport),JSON.stringify({lang,width,height,bounds}));
         assert.equal(await page.locator('#assetPane-market').isVisible(),false);
+        assert.equal(await page.locator('.asset-comparisons .detail-metric').count(),2);
+        assert.equal(await page.locator('.comparison-quality').isVisible(),true);
         await page.screenshot({path:path.join(screenshots,`signals-${lang}-${width}.png`)});
         await page.locator('#assetTab-signals').focus();await page.keyboard.press('ArrowRight');
         assert.equal(await page.locator('#assetTab-market').getAttribute('aria-selected'),'true');
@@ -57,10 +60,14 @@ async function main(){
     assert.equal(await page.locator('html').getAttribute('lang'),'fr');assert.match(await page.locator('h1').textContent(),/cadre clair/);
     assert.equal(await page.locator('code').filter({hasText:'orbit.locale.v1'}).count(),1);
     await page.locator('[data-lang="en"]').click();assert.match(await page.locator('h1').textContent(),/Clear terms/);
+    assert.deepEqual(await context.cookies(),[]);
+    const stored=await page.evaluate(()=>({keys:Object.keys(localStorage).sort(),session:Object.keys(sessionStorage)}));
+    assert.deepEqual(stored.keys,['orbit.favs.v1','orbit.locale.v1','orbit.settings.v2']);assert.deepEqual(stored.session,[]);
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);await context.close();
 
     const fixtures=await browser.newContext({viewport:{width:390,height:844}}),testPage=await fixtures.newPage();
     const stamp=new Date().toISOString(),fixture={snapshot:stamp,coins:Array.from({length:30},(_,i)=>({id:'test-'+i,name:'Test '+i,symbol:'t'+i,current_price:1,market_cap:1000,total_volume:i===0?50000:20+i,[C.TF['24h']]:i===0?-60:i%7-3,[C.TF['7d']]:i%9,has_logo:false}))};
+    fixture.coins[1].id='bitcoin';for(const c of fixture.coins)c.last_updated=stamp;
     await testPage.route('**/data.json',r=>r.fulfill({json:fixture}));
     await testPage.goto(origin+'/web/');await testPage.waitForFunction(()=>state.snapshot);
     await testPage.evaluate(()=>openAsset('test-0'));
@@ -68,16 +75,29 @@ async function main(){
     const result=C.analyze(C.normalizeSnapshot(fixture),'24h').byId.get('test-0');
     assert.deepEqual(actual.map(r=>r.value),[result.priceZ,result.activityZ,result.priceZ-result.activityZ]);
     assert.ok(actual.every(r=>r.active));
+    // Independent arithmetic: -60% asset vs -2% BTC gives about -59.18%, not -58pp.
+    assert.equal(await testPage.locator('[data-comparison="btc"] b').textContent(),'-59.2%');
+    assert.match(await testPage.locator('[data-comparison="median"] b').textContent(),/pp$/);
+    assert.match(await testPage.locator('.comparison-quality').textContent(),/Dated asset price/);
     await testPage.screenshot({path:path.join(screenshots,'synthetic-alert-test.png')});
     await testPage.evaluate(()=>{changeSetting('tf','7d');renderAsset();});
     assert.equal(await testPage.locator('.signal-reading .is-unavailable').count(),2);
     assert.match(await testPage.locator('[data-reading="divergence"]').textContent(),/24H only/);
+    await testPage.evaluate(()=>{state.snapshot.coins.find(c=>c.id==='bitcoin').last_updated=null;render();renderAsset();});
+    assert.match(await testPage.locator('#assetPane-signals').textContent(),/Bitcoin observation time unknown/);
+    await testPage.evaluate(()=>{const btc=state.snapshot.coins.find(c=>c.id==='bitcoin');btc.observationInvalid=true;render();renderAsset();});
+    assert.equal(await testPage.locator('[data-comparison="btc"] b').textContent(),'N/A');
+    assert.match(await testPage.locator('#assetPane-signals').textContent(),/invalid or stale/);
     await testPage.evaluate(()=>{state.snapshot.snapshot='2020-01-01T00:00:00Z';render();renderAsset();});
     assert.equal(await testPage.locator('.gauge-marker').count(),0);
     assert.equal(await testPage.locator('.signal-reading .is-unavailable').count(),3);
     assert.match(await testPage.locator('#assetPane-signals').textContent(),/Signals unavailable/);
+    assert.equal(await testPage.locator('[data-comparison="median"] b').textContent(),'N/A');
+    assert.equal(await testPage.locator('#marketContext .breadth-bar').count(),0);
+    const keys=await testPage.evaluate(()=>Object.keys(localStorage));assert.deepEqual(keys.sort(),['orbit.favs.v1','orbit.settings.v2']);
+    assert.deepEqual(await fixtures.cookies(),[]);
     await fixtures.close();
-    console.log(JSON.stringify({result:'PASS',screenshots,checks:['new visitor FR/EN','home without preselected favorites','FAQ','support links','locale persistence','home return preserves favorites','signals above fold','keyboard tabs and refresh','stale suppression','7D suppresses activity','signed scores unchanged','legal translations','no third-party requests']},null,2));
+    console.log(JSON.stringify({result:'PASS',screenshots,checks:['new visitor FR/EN','home without preselected favorites','FAQ','support links','locale persistence','home return preserves favorites','signals above fold','keyboard tabs and refresh','stale suppression','7D suppresses activity','signed scores unchanged','BTC ratio and median units','dated vs collection-only state','market breadth','legal translations','no third-party requests','no cookies','only preference storage']},null,2));
   }finally{await browser.close();}
 }
 main().catch(e=>{console.error(e);process.exit(1);});
