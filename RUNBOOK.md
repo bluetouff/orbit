@@ -172,7 +172,8 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 - **Logo warmup**: `ORBIT_LOGO_FETCH_PER_RUN` caps new logo downloads per build.
   Logos already present do not trigger a provider call.
 - **Watchlist / view**: 50 favorites maximum (`core.js`), 100 coins in the market
-  view (`app.js`). The default screen is the watchlist.
+  view (`app.js`). Existing selections open the watchlist; new visitors see the
+  bilingual home and an unselected real-data preview, then choose their coins.
   Favorites are persisted in the browser through `localStorage`
   (`orbit.favs.v1`): no account, no login, nothing is sent to the server.
 

@@ -8,6 +8,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self' data:; object-src 'none'; worker-src 'none'; frame-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
 <link rel="icon" href="../orbit.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../app.css?v=orbit2-experience-1">
+<script src="../i18n.js" defer></script>
 </head>
 <body class="legal-body">
 <main class="legal-page">
@@ -26,6 +27,8 @@
       <a href="../">App</a>
       <a href="https://l0g.fr/" rel="noopener">l0g.fr</a>
       <a href="mailto:admin@toonux.com">Contact</a>
+      <a data-support href="https://l0g.fr/en/support/">Support l0g</a>
+      <div class="language-control" role="group" aria-label="Language"><button data-lang="fr" lang="fr" aria-pressed="false">FR</button><button data-lang="en" lang="en" aria-pressed="true">EN</button></div>
     </div>
   </nav>
 
@@ -96,6 +99,7 @@
       <article>
         <h3>Local favorites</h3>
         <p>Your watchlist is stored locally in your browser under <code>orbit.favs.v1</code>, and display preferences under <code>orbit.settings.v2</code>. They are not sent to the server, not attached to an account and can be cleared from your browser storage. Watchlist import reads your selected JSON file on this device; export downloads a local file. Neither operation uploads your selection.</p>
+        <p>Your language preference is stored locally under <code>orbit.locale.v1</code>.</p>
       </article>
       <article>
         <h3>Server-side data providers</h3>

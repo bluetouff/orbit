@@ -90,10 +90,11 @@ class ReleaseHTML(HTMLParser):
 def payload(web, revision):
     if not SHA.fullmatch(revision):
         raise ValueError('A full 40-character Git revision is required')
-    names = ['app.js', 'core.js', 'app.css', 'orbit.svg', 'icons/LICENSE']
-    names += sorted(str(p.relative_to(web)) for p in (web / 'icons').glob('*.svg'))
-    if len(names) < 6:
+    names = ['app.js', 'core.js', 'i18n.js', 'app.css', 'orbit.svg', 'icons/LICENSE']
+    icons = sorted(str(p.relative_to(web)) for p in (web / 'icons').glob('*.svg'))
+    if not icons:
         raise ValueError('Missing local icons')
+    names += icons
     assets = {}
     for name in names:
         file = web / name

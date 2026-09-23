@@ -38,14 +38,22 @@ class DeployTests(unittest.TestCase):
     def test_versioned_payload_rewrites_only_assets_and_marks_both_pages(self):
         assets, pages = d.payload(d.REPO / 'web', REV)
         self.assertIn('core.js', assets)
+        self.assertIn('i18n.js', assets)
         self.assertNotIn('data.json', assets)
         self.assertTrue(all(not n.startswith('logos/') for n in assets))
         for body in pages.values():
             text = body.decode()
             self.assertIn(f'/releases/{REV}/app.css', text)
+            self.assertIn(f'/releases/{REV}/i18n.js', text)
             self.assertIn(f'name="orbit-release" content="{REV}"', text)
             self.assertNotIn('orbit2-experience-1', text)
         self.assertIn('href="legal/"', pages['index.html'].decode())
+
+    def test_missing_icons_remain_blocking_with_localization_asset(self):
+        empty_web = self.base / 'empty-web'
+        (empty_web / 'icons').mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, 'Missing local icons'):
+            d.payload(empty_web, REV)
 
     def test_external_asset_and_path_traversal_are_refused(self):
         for url in ['https://evil.example/x.js', '//evil.example/x.js', '../private.js', '/private.js']:

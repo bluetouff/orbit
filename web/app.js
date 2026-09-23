@@ -1,29 +1,32 @@
 'use strict';
-const C=OrbitCore,$=id=>document.getElementById(id);
+const C=OrbitCore,$=id=>document.getElementById(id),t=(key,values)=>OrbitI18n.t(key,values);
 const ASSET_BASE=new URL('.',document.currentScript.src);
 const FAV_KEY='orbit.favs.v1',SETTINGS_KEY='orbit.settings.v2';
 function readStorage(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}}
 const saved=readStorage(FAV_KEY,[]);
 const state={snapshot:null,selected:new Set((Array.isArray(saved)?saved:[]).filter(id=>typeof id==='string'&&C.ID.test(id)).slice(0,50)),
-  settings:C.settings(readStorage(SETTINGS_KEY,null)),view:'fav',onboarding:false,analysis:null,loading:true,error:false,activeCoin:null};
-state.onboarding=state.selected.size===0;
+  settings:C.settings(readStorage(SETTINGS_KEY,null)),view:'fav',onboarding:false,picking:false,analysis:null,loading:true,error:false,activeCoin:null,assetTab:'signals'};
+state.onboarding=state.selected.size===0||new URL(location.href).searchParams.get('view')==='home';
 let busy=false,refreshTimer,toastTimer,manageLimit=80,pendingImport=null,rects=[],canvasFrame=0;
 const logos=new Map(),canvas=$('map'),ctx=canvas.getContext('2d');
-const pct=v=>v==null?'Unavailable':(v>=0?'+':'')+v.toFixed(Math.abs(v)>=10?1:2)+'%';
-const price=v=>v==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:v<1?8:v<100?2:0}).format(v);
-const big=v=>v==null?'Unavailable':new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2,style:'currency',currency:'USD'}).format(v);
-const date=v=>C.time(v)===null?'Unknown':new Date(v).toLocaleString('en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'UTC'})+' UTC';
-const age=ms=>ms==null||ms<0?'Unknown':ms<60000?'Just now':ms<3600000?Math.floor(ms/60000)+'m ago':ms<86400000?Math.floor(ms/3600000)+'h ago':Math.floor(ms/86400000)+'d ago';
+const locale=()=>OrbitI18n.language==='fr'?'fr-FR':'en-US';
+const decimal=(v,digits=2)=>new Intl.NumberFormat(locale(),{minimumFractionDigits:digits,maximumFractionDigits:digits}).format(v);
+const pct=v=>v==null?t('Unavailable'):(v>=0?'+':'')+decimal(v,Math.abs(v)>=10?1:2)+'%';
+const price=v=>v==null?t('Unavailable'):new Intl.NumberFormat(locale(),{style:'currency',currency:'USD',maximumFractionDigits:v<1?8:v<100?2:0}).format(v);
+const big=v=>v==null?t('Unavailable'):new Intl.NumberFormat(locale(),{notation:'compact',maximumFractionDigits:2,style:'currency',currency:'USD'}).format(v);
+const date=v=>C.time(v)===null?t('Unknown'):new Date(v).toLocaleString(OrbitI18n.language==='fr'?'fr-FR':'en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'UTC'})+' UTC';
+const age=ms=>ms==null||ms<0?t('Unknown'):ms<60000?t('Just now'):ms<3600000?t('{n}m ago',{n:Math.floor(ms/60000)}):ms<86400000?t('{n}h ago',{n:Math.floor(ms/3600000)}):t('{n}d ago',{n:Math.floor(ms/86400000)});
 const periods={'1h':'1-hour','24h':'24-hour','7d':'7-day','30d':'30-day'};
-function el(tag,className,content){const n=document.createElement(tag);if(className)n.className=className;if(content!==undefined)n.textContent=content;return n;}
+function el(tag,className,content,translate=true){const n=document.createElement(tag);if(className)n.className=className;if(content!==undefined)n.textContent=translate?t(content):content;return n;}
 function icon(name){const n=el('img','icon');n.src=new URL('icons/'+name+'.svg',ASSET_BASE).href;n.alt='';return n;}
 function coinImage(c){if(!c.has_logo)return el('span','coin-logo');const n=el('img','coin-logo');n.src='./logos/'+encodeURIComponent(c.id)+'.png';n.alt='';n.loading='lazy';n.addEventListener('error',()=>{n.replaceWith(el('span','coin-logo'));},{once:true});return n;}
 function button(label,className,handler){const n=el('button',className,label);n.type='button';if(handler)n.addEventListener('click',handler);return n;}
-function toast(message){$('toast').textContent=message;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500);}
+function toast(message){$('toast').textContent=t(message);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500);}
 function save(){try{localStorage.setItem(FAV_KEY,JSON.stringify([...state.selected]));localStorage.setItem(SETTINGS_KEY,JSON.stringify(state.settings));}catch{toast('Browser storage is unavailable. Export your watchlist to keep it.');}}
 function coins(){return state.snapshot?.coins||[];}
 function byId(id){return coins().find(c=>c.id===id);}
 function sourceCoins(){return state.view==='market'?coins().slice(0,100):[...state.selected].map(byId).filter(Boolean);}
+function mapCoins(){return state.onboarding&&!state.selected.size?['bitcoin','ethereum','solana','chainlink','uniswap','aave'].map(byId).filter(Boolean):sourceCoins();}
 function eventsFor(c){return state.analysis?.byId.get(c.id);}
 function toggleCoin(id){
   if(!C.ID.test(id))return;
@@ -37,47 +40,52 @@ function changeSetting(key,value){state.settings=C.settings({...state.settings,[
 function render(){
   state.analysis=C.analyze(state.snapshot,state.settings.tf);
   $('shell').classList.toggle('onboarding',state.onboarding);
-  $('welcome').hidden=!state.onboarding;
+  $('shell').classList.toggle('home',state.onboarding&&!state.picking);
+  $('welcome').hidden=!state.onboarding||!state.picking;
+  $('homeIntro').hidden=!state.onboarding||state.picking;
+  $('homeFaq').hidden=!state.onboarding||state.picking;
   $('signalsPanel').hidden=state.onboarding||!state.settings.signalsOpen;
   $('workspace').classList.toggle('with-signals',!$('signalsPanel').hidden);
-  $('workspace').classList.toggle('with-welcome',state.onboarding);
+  $('workspace').classList.toggle('with-welcome',state.onboarding&&state.picking);
+  $('workspace').classList.toggle('with-home',state.onboarding&&!state.picking);
+  $('buildWatchlist').firstChild.textContent=t(state.selected.size?'Open my watchlist':'Build my watchlist')+' ';
   $('watchCount').textContent=state.selected.size;
   document.querySelectorAll('[data-tf]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tf===state.settings.tf)));
   document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===state.view)));
   $('filterSelect').value=state.settings.filter;$('sizeSelect').value=state.settings.metric;
   $('signalsToggle').setAttribute('aria-expanded',String(state.settings.signalsOpen));
-  $('mapTitle').textContent=state.onboarding?'Your selection':state.view==='market'?'Market':'Watchlist';
-  const list=sourceCoins(),returns=list.map(c=>c[C.TF[state.settings.tf]]).filter(Number.isFinite);
-  const missing=state.view==='fav'?state.selected.size-list.length:0;
-  $('mapSummary').textContent=list.length+' coins'+(missing?' · '+missing+' unavailable':'')+(returns.length?' · mean '+pct(returns.reduce((a,b)=>a+b,0)/returns.length):'');
-  $('periodCaption').textContent=periods[state.settings.tf]+' performance · USD';
+  $('mapTitle').textContent=t(state.onboarding?(state.selected.size?'Your selection':'Market preview'):state.view==='market'?'Market':'Watchlist');
+  const list=mapCoins(),returns=list.map(c=>c[C.TF[state.settings.tf]]).filter(Number.isFinite);
+  const missing=state.view==='fav'?state.selected.size-sourceCoins().length:0;
+  $('mapSummary').textContent=t(list.length===1?'{n} coin':'{n} coins',{n:list.length})+(missing?t(' · {n} unavailable',{n:missing}):'')+(returns.length?t(' · mean {value}',{value:pct(returns.reduce((a,b)=>a+b,0)/returns.length)}):'');
+  $('periodCaption').textContent=t('{period} performance · USD',{period:t(periods[state.settings.tf])});
   renderSources();renderSignals();drawMap();renderSelection();
 }
 function renderSelection(){
-  $('welcomeCount').textContent=state.selected.size+' of 50 selected';$('manageCount').textContent=state.selected.size+' / 50 selected';
+  $('welcomeCount').textContent=t('{n} of 50 selected',{n:state.selected.size});$('manageCount').textContent=t('{n} / 50 selected',{n:state.selected.size});
   $('finishWelcome').disabled=state.selected.size===0;
 }
 function renderSources(){
   const source=C.sourceState(state.snapshot,'coingecko_markets');
-  $('marketAge').textContent=(source.usable?'Received ':'Market data: '+source.kind+' · ')+age(source.age);
+  $('marketAge').textContent=source.usable?t('Received {age}',{age:age(source.age)}):t('Market data: {state} · {age}',{state:t(source.kind),age:age(source.age)});
   $('marketAge').classList.toggle('warning',!source.usable);
-  $('marketAge').title='Snapshot collected '+date(source.stamp);
-  $('connectionStatus').textContent=state.error?'Connection interrupted · retrying':state.loading?'Connecting':'Same-origin data';
+  $('marketAge').title=t('Snapshot collected {date}',{date:date(source.stamp)});
+  $('connectionStatus').textContent=t(state.error?'Connection interrupted · retrying':state.loading?'Connecting':'Same-origin data');
   const summary=$('marketSummary');summary.replaceChildren();
   const global=C.sourceState(state.snapshot,'coingecko_global').usable?state.snapshot?.global:null;
-  if(global?.cap!=null)summary.append(el('span','', 'Market '+big(global.cap)));
-  if(global?.btc!=null)summary.append(el('span','', 'BTC dominance '+global.btc.toFixed(1)+'%'));
+  if(global?.cap!=null)summary.append(el('span','',t('Market {value}',{value:big(global.cap)})));
+  if(global?.btc!=null)summary.append(el('span','',t('BTC dominance {value}%',{value:decimal(global.btc,1)})));
   const box=$('sourceStatus');box.replaceChildren();
   for(const [key,name] of [['coingecko_markets','CoinGecko'],['lunarcrush','LunarCrush'],['fred','FRED']]){
     const s=C.sourceState(state.snapshot,key),row=el('div','source-row'),heading=el('div','source-heading');
     heading.append(el('b','',name),el('span','source-state '+s.kind,s.kind==='current'?'Current':s.kind));
-    row.append(heading,el('span','source-time',s.stamp?'Collected '+age(s.age):'Collection time unavailable'));
-    row.title='Collected '+date(s.stamp);
+    row.append(heading,el('span','source-time',s.stamp?t('Collected {age}',{age:age(s.age)}):'Collection time unavailable'));
+    row.title=t('Collected {date}',{date:date(s.stamp)});
     if(key==='fred'){
       const m=state.snapshot?.macro;
-      for(const [k,label] of [['us10y','10Y'],['usd','Broad USD']])if(m?.[k])row.append(el('span','source-observation',label+' '+m[k].value+(k==='us10y'?'%':'')+' · observed '+(m[k].date||'unknown')));
+      for(const [k,label] of [['us10y','10Y'],['usd','Broad USD']])if(m?.[k])row.append(el('span','source-observation',t(label)+' '+m[k].value+(k==='us10y'?'%':'')+' · '+t('observed')+' '+(m[k].date||t('unknown'))));
     }
-    if(key==='lunarcrush'&&s.usable){const n=coins().filter(c=>c.galaxy_score!==null).length;row.append(el('span','source-observation',n+' assets covered · context only'));}
+    if(key==='lunarcrush'&&s.usable){const n=coins().filter(c=>c.galaxy_score!==null).length;row.append(el('span','source-observation',t('{n} assets covered · context only',{n})));}
     box.append(row);
   }
 }
@@ -86,8 +94,8 @@ function renderSignals(){
   for(const c of list)for(const event of eventsFor(c)?.events||[])items.push({c,event});
   items.sort((a,b)=>b.event.score-a.event.score||a.c.id.localeCompare(b.c.id));
   $('signalCount').textContent=items.length;$('panelCount').textContent=items.length;
-  $('signalsPanel').querySelector('.eyebrow').textContent=state.view==='market'?'In the top 100':'In your watchlist';
-  $('signalContext').textContent=periods[state.settings.tf]+' · '+analysis.price.n+' reference assets';
+  $('signalsPanel').querySelector('.eyebrow').textContent=t(state.view==='market'?'In the top 100':'In your watchlist');
+  $('signalContext').textContent=t('{period} · {n} reference assets',{period:t(periods[state.settings.tf]),n:analysis.price.n});
   const container=$('signalList'),focused=container.contains(document.activeElement)?document.activeElement.dataset.signal:null;container.replaceChildren();
   if(!items.length){
     let title='No active signals',body='No thresholds crossed in this selection.';
@@ -100,15 +108,18 @@ function renderSignals(){
   for(const {c,event} of items){
     const row=button('', 'signal-item '+event.kind,()=>openAsset(c.id));
     row.dataset.signal=c.id+'-'+event.kind;
-    const top=el('span','signal-item-top');top.append(coinImage(c),el('b','',c.name),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
-    row.append(top,el('strong','signal-label',event.label),el('span','signal-meta',event.kind==='divergence'?'24H price / turnover · CoinGecko':state.settings.tf.toUpperCase()+' · CoinGecko'),el('span','signal-time',date(state.snapshot.snapshot)));
+    const top=el('span','signal-item-top');top.append(coinImage(c),el('b','',c.name,false),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
+    const reading=signalReading(c,event.kind),label=el('span','signal-label-row');
+    label.append(el('strong','signal-label',event.label),el('b','signal-score',decimal(reading.value)));
+    row.append(top,label,signalGauge(reading,true),el('span','signal-meta',event.kind==='divergence'?'24H z-score gap · threshold > 1.2':t('{period} z-score · threshold {threshold}',{period:t(state.settings.tf.toUpperCase()),threshold:event.kind==='price'?'|z| > 2':'> 2'})));
+    row.title='CoinGecko · '+t('Collected {date}',{date:date(state.snapshot.snapshot)});
     container.append(row);
   }
   if(items.length&&list.some(c=>!eventsFor(c)?.available))container.append(el('p','empty-description','Some assets have insufficient or stale data.'));
   if(state.settings.tf!=='24h')container.append(el('p','empty-description','Price anomalies only. Activity comparisons are available in 24H.'));
   if(focused)container.querySelector(`[data-signal="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
 }
-function filteredCoins(){return sourceCoins().filter(c=>{
+function filteredCoins(){return mapCoins().filter(c=>{
   if(state.onboarding)return true;
   const p=c[C.TF[state.settings.tf]],r=eventsFor(c);
   return state.settings.filter==='all'||state.settings.filter==='gainers'&&p!=null&&p>0||state.settings.filter==='losers'&&p!=null&&p<0||state.settings.filter==='divergence'&&r?.divergence!=null||state.settings.filter==='anomaly'&&r?.events.some(e=>e.kind!=='divergence');
@@ -128,13 +139,13 @@ function paintMap(){
     if(!state.snapshot){title=state.error?'Market data unavailable':'Loading market data';body=state.error?'We will retry automatically. Your watchlist is kept.':'';}
     else if(state.settings.filter!=='all'&&sourceCoins().length){title='No matching coins';body='Nothing in this selection matches the current filter.';}
     else if(state.selected.size){title='Selected coins unavailable';body='Your selection is kept until these assets return to the feed.';}
-    $('mapMessageTitle').textContent=title;$('mapMessageBody').textContent=body;$('resetFilter').hidden=state.settings.filter==='all';
+    $('mapMessageTitle').textContent=t(title);$('mapMessageBody').textContent=t(body);$('resetFilter').hidden=state.settings.filter==='all';
   }
   for(const r of rects){
     paintTile(r);
     const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;
     const p=r.coin[C.TF[state.settings.tf]],events=eventsFor(r.coin)?.events||[];
-    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+state.settings.tf+(events.length?', '+events.map(e=>e.label).join(', '):''));
+    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
     b.style.left=r.x+'px';b.style.top=r.y+'px';b.style.width=r.w+'px';b.style.height=r.h+'px';
     b.addEventListener('pointerenter',()=>showTooltip(r));b.addEventListener('pointerleave',hideTooltip);b.addEventListener('focus',()=>showTooltip(r));b.addEventListener('blur',hideTooltip);
     b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b);buttons[(index+delta+buttons.length)%buttons.length]?.focus();}});
@@ -164,7 +175,7 @@ function paintTile(r){
   const block=content.logo+(img?content.gap:0)+fs,top=y+badge+(h-badge-block)/2;
   if(img&&content.logo>8){ctx.save();ctx.beginPath();ctx.arc(x+w/2,top+content.logo/2,content.logo/2,0,Math.PI*2);ctx.clip();ctx.drawImage(img,x+(w-content.logo)/2,top,content.logo,content.logo);ctx.restore();}
   if(fs>=6){ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(text,x+w/2,top+content.logo+(img?content.gap:0));}
-  if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(result.divergence!=null?'DIVERGENCE':'ANOMALY',x+10,y+8,w-20);}
+  if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
   ctx.restore();
 }
 function showTooltip(r){const t=$('tileTooltip');t.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]]);t.hidden=false;t.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-t.offsetWidth-8))+'px';t.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-t.offsetHeight-8))+'px';}
@@ -178,41 +189,96 @@ function renderChoices(target,query,limit,onlySelected){
   container.replaceChildren();
   for(const c of matching.slice(0,limit)){
     const selected=state.selected.has(c.id),row=button('', 'coin-choice',()=>toggleCoin(c.id));row.dataset.coin=c.id;row.setAttribute('aria-pressed',String(selected));
-    const identity=el('span','coin-identity');identity.append(el('b','',c.name),el('small','',c.symbol.toUpperCase()));
+    const identity=el('span','coin-identity');identity.append(el('b','',c.name,false),el('small','',c.symbol.toUpperCase(),false));
     const values=el('span','coin-values');values.append(el('span','',price(c.current_price)),el('small',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
-    row.append(coinImage(c),identity,values,icon(selected?'check':'plus'));row.setAttribute('aria-label',(selected?'Remove ':'Add ')+c.name);container.append(row);
+    row.append(coinImage(c),identity,values,icon(selected?'check':'plus'));row.setAttribute('aria-label',t(selected?'Remove {name}':'Add {name}',{name:c.name}));container.append(row);
   }
   if(!matching.length)container.append(el('p','empty-description',state.loading?'Loading coins...':!state.snapshot?'Market data is unavailable.':onlySelected?'No selected coins match.':'No matching coin in the current feed.'));
   if(target==='manageResults')$('moreCoins').hidden=matching.length<=limit;
   if(focused)container.querySelector(`[data-coin="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
 }
 function openDialog(id){const d=$(id);d._opener=document.activeElement;if(!d.open)d.showModal();}
-function openAsset(id){if(!byId(id))return;hideTooltip();state.activeCoin=id;renderAsset();openDialog('assetDialog');}
+function openAsset(id){if(!byId(id))return;hideTooltip();state.activeCoin=id;state.assetTab='signals';renderAsset();openDialog('assetDialog');$('assetDialog').scrollTop=0;}
 function metric(label,value){const n=el('div','detail-metric');n.append(el('span','',label),el('b','',value));return n;}
+function signalReading(c,kind){
+  const result=eventsFor(c),event=result?.events.find(e=>e.kind===kind);
+  const value=kind==='price'?result?.priceZ:kind==='activity'?result?.activityZ:
+    Number.isFinite(result?.priceZ)&&Number.isFinite(result?.activityZ)?result.priceZ-result.activityZ:null;
+  return {kind,value:Number.isFinite(value)?value:null,active:!!event,threshold:kind==='divergence'?1.2:2,
+    label:{price:'Price anomaly',activity:'Turnover anomaly',divergence:'Price / activity gap'}[kind],
+    status:event?.label||(!result?.available?result?.reason||'Signals unavailable':kind!=='price'&&state.settings.tf!=='24h'?'24H only':!Number.isFinite(value)?'Insufficient activity data':'Within threshold')};
+}
+function signalGauge(reading,compact=false){
+  const {kind,value,threshold,active,label}=reading,extent=Math.max(4,Math.ceil(Math.abs(value||0)));
+  const gauge=el('div','signal-gauge '+kind+(active?' is-active':'')+(value===null?' is-unavailable':'')+(compact?' compact':''));
+  gauge.setAttribute('role','img');
+  gauge.setAttribute('aria-label',value===null?t(label)+': '+t(reading.status):t('{label}: {value} {unit}. Threshold {rule} {threshold}',{label:t(label),value:decimal(value),unit:t(kind==='divergence'?'z-score gap':'z-score'),rule:t(kind==='activity'?'above':'absolute value above'),threshold:decimal(threshold,kind==='divergence'?1:0)}));
+  const track=el('span','gauge-track');track.setAttribute('aria-hidden','true');
+  if(value!==null){
+    const position=v=>(v+extent)/(2*extent)*100;
+    const band=el('span','gauge-band');band.style.left=(kind==='activity'?0:position(-threshold))+'%';band.style.right=(100-position(threshold))+'%';track.append(band);
+    const zero=el('span','gauge-zero');track.append(zero);
+    for(const boundary of kind==='activity'?[threshold]:[-threshold,threshold]){const tick=el('span','gauge-threshold');tick.style.left=position(boundary)+'%';track.append(tick);}
+    const fill=el('span','gauge-fill');fill.style.left=Math.min(50,position(value))+'%';fill.style.width=Math.abs(position(value)-50)+'%';track.append(fill);
+    const marker=el('span','gauge-marker');marker.style.left=position(value)+'%';track.append(marker);
+  }
+  gauge.append(track);
+  if(!compact){const scale=el('span','gauge-scale');scale.setAttribute('aria-hidden','true');scale.append(el('span','',value===null?'':String(-extent)),el('span','',value===null?'Unavailable':(kind==='activity'?'z > ':'|z| > ')+decimal(threshold,kind==='divergence'?1:0)),el('span','',value===null?'':'+'+extent));gauge.append(scale);}
+  return gauge;
+}
+function renderAssetSignals(c){
+  const result=eventsFor(c),section=el('section','asset-signals'),summary=el('div','signal-summary');
+  summary.append(el('h3','',result?.available?(result.events.length?t(result.events.length>1?'{n} signals detected':'{n} signal detected',{n:result.events.length}):'No thresholds crossed'):'Signals unavailable'),el('span','',state.settings.tf.toUpperCase()));
+  section.append(summary);
+  for(const kind of ['price','activity','divergence']){
+    const reading=signalReading(c,kind),row=el('div','signal-reading '+kind+(reading.active?' is-active':''));row.dataset.reading=kind;
+    const heading=el('div','reading-heading'),copy=el('div'),value=el('div','reading-value');
+    copy.append(el('h4','',reading.label),el('p','',reading.status));
+    value.append(el('b','',reading.value===null?'N/A':(reading.value>=0?'+':'')+decimal(reading.value)),el('span','',kind==='divergence'?'z gap':'z-score'));
+    heading.append(copy,value);row.append(heading,signalGauge(reading));section.append(row);
+  }
+  const foot=el('div','signal-footnote');
+  foot.append(el('p','',t('{price} price / {activity} activity peers · CoinGecko',{price:state.analysis.price.n,activity:state.analysis.activity.n})),el('p','',t('Collected {date}',{date:date(state.snapshot.snapshot)})),el('p','', 'Cross-asset comparison, not a buy or sell signal.'));
+  const method=button('Methodology','text-button',()=>openDialog('methodDialog'));method.id='assetMethod';foot.append(method);section.append(foot);
+  return section;
+}
+function selectAssetTab(tab,focus=false){
+  state.assetTab=tab;
+  for(const id of ['signals','market']){
+    const selected=tab===id,b=$('assetTab-'+id);b.setAttribute('aria-selected',String(selected));b.tabIndex=selected?0:-1;
+    $('assetPane-'+id).hidden=!selected;
+  }
+  $('assetDialog').scrollTop=0;
+  if(focus)$('assetTab-'+tab).focus({preventScroll:true});
+  const chart=$('assetPane-market').querySelector('.spark'),c=byId(state.activeCoin);
+  if(tab==='market'&&chart&&c)requestAnimationFrame(()=>drawSpark(chart,c.spark));
+}
 function renderAsset(){
   const restoreFocus=$('assetContent').contains(document.activeElement)?document.activeElement.id:null;
+  const scrollTop=$('assetDialog').scrollTop;
   const c=byId(state.activeCoin);if(!c){$('assetContent').replaceChildren(el('p','', 'This asset is no longer in the current snapshot.'));return;}
-  const identity=$('assetIdentity');identity.replaceChildren(coinImage(c));const name=el('div');name.append(el('h2','',c.name),el('span','muted',c.symbol.toUpperCase()));name.querySelector('h2').id='assetTitle';identity.append(name);
+  const identity=$('assetIdentity');identity.replaceChildren(coinImage(c));const name=el('div');name.append(el('h2','',c.name,false),el('span','muted',c.symbol.toUpperCase(),false));name.querySelector('h2').id='assetTitle';identity.append(name);
   const body=$('assetContent');body.replaceChildren();
-  const head=el('div','asset-price');head.append(el('b','',price(c.current_price)),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])+' · '+state.settings.tf.toUpperCase()));body.append(head);
-  const fav=button(state.selected.has(c.id)?'Remove from watchlist':'Add to watchlist','secondary',()=>toggleCoin(c.id));fav.id='assetFavorite';fav.prepend(icon('star'));body.append(fav);
-  body.append(el('p','detail-date',(c.last_updated?'Price observed '+date(c.last_updated):'Price observation time unavailable')+' · snapshot collected '+date(state.snapshot.snapshot)));
-  if(c.spark.length>1){const chart=el('canvas','spark');chart.setAttribute('role','img');chart.setAttribute('aria-label','7-day price history');body.append(chart,el('p','detail-date','7-day price history · CoinGecko'));requestAnimationFrame(()=>drawSpark(chart,c.spark));}
-  const performance=el('div','detail-grid');for(const tf of Object.keys(C.TF))performance.append(metric(tf.toUpperCase(),pct(c[C.TF[tf]])));body.append(performance);
-  const result=eventsFor(c),section=el('section','detail-signals');section.append(el('h3','', 'Signals'));
-  if(!result?.available)section.append(el('p','',result?.reason||'Signals unavailable'));
-  else if(!result.events.length)section.append(el('p','', 'No thresholds crossed for this asset.'));
-  else for(const event of result.events){const item=el('div','signal-explanation');item.append(el('h4','',event.label));
-    const explain=event.kind==='price'?`The ${state.settings.tf.toUpperCase()} return is ${Math.abs(result.priceZ).toFixed(2)} standard deviations ${result.priceZ>0?'above':'below'} the reference mean.`:event.kind==='activity'?`Log-transformed 24H volume / market cap is ${result.activityZ.toFixed(2)} standard deviations above the reference mean.`:`Price z-score ${result.priceZ.toFixed(2)}; activity z-score ${result.activityZ.toFixed(2)}. Absolute gap ${Math.abs(result.divergence).toFixed(2)}, above the 1.2 threshold.`;
-    item.append(el('p','',explain));section.append(item);
+  const head=el('div','asset-price'),quote=el('div','asset-quote');quote.append(el('b','',price(c.current_price)),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])+' · '+t(state.settings.tf.toUpperCase())));
+  const fav=button('','icon-button',()=>toggleCoin(c.id));fav.id='assetFavorite';fav.title=t(state.selected.has(c.id)?'Remove from watchlist':'Add to watchlist');fav.setAttribute('aria-label',fav.title);fav.setAttribute('aria-pressed',String(state.selected.has(c.id)));fav.append(icon('star'));head.append(quote,fav);body.append(head);
+  const tabs=el('div','asset-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',t('Asset details'));
+  for(const [id,label] of [['signals','Signals'],['market','Market data']]){
+    const tab=button(label,'',()=>selectAssetTab(id));tab.id='assetTab-'+id;tab.setAttribute('role','tab');tab.setAttribute('aria-controls','assetPane-'+id);
+    tab.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();selectAssetTab(e.key==='Home'?'signals':e.key==='End'?'market':state.assetTab==='signals'?'market':'signals',true);}});
+    tabs.append(tab);
   }
-  section.append(el('p','detail-date',`${state.analysis.price.n} reference assets · CoinGecko · ${date(state.snapshot.snapshot)}`),el('p','detail-date','Cross-sectional comparison. Not evidence of buying, selling or future returns.'));
-  const method=button('Methodology','text-button',()=>openDialog('methodDialog'));method.id='assetMethod';section.append(method);body.append(section);
+  body.append(tabs);
+  const signals=renderAssetSignals(c),market=el('section','asset-market');
+  for(const [id,pane] of [['signals',signals],['market',market]]){pane.id='assetPane-'+id;pane.setAttribute('role','tabpanel');pane.setAttribute('aria-labelledby','assetTab-'+id);pane.tabIndex=0;body.append(pane);}
+  market.append(el('p','detail-date',(c.last_updated?t('Price observed {date}',{date:date(c.last_updated)}):t('Price observation time unavailable'))+t(' · snapshot collected {date}',{date:date(state.snapshot.snapshot)})));
+  if(c.spark.length>1){const chart=el('canvas','spark');chart.setAttribute('role','img');chart.setAttribute('aria-label',t('7-day price history'));market.append(chart,el('p','detail-date','7-day price history · CoinGecko'));}
+  const performance=el('div','detail-grid');for(const tf of Object.keys(C.TF))performance.append(metric(tf.toUpperCase(),pct(c[C.TF[tf]])));market.append(performance);
   const social=C.sourceState(state.snapshot,'lunarcrush');
-  body.append(el('h3','detail-subtitle','Social context'));
-  body.append(el('p','muted',social.usable&&c.galaxy_score!==null?'Galaxy Score '+c.galaxy_score+'/100'+(c.sentiment!==null?' · sentiment '+c.sentiment+'%':'')+' · LunarCrush, '+date(social.stamp)+'. Symbol-based match; indicative only.':'LunarCrush data unavailable for this asset.'));
-  const metrics=el('div','detail-grid');metrics.append(metric('Market cap',big(c.market_cap)),metric('24H volume',big(c.total_volume)),metric('All-time high',price(c.ath)),metric('Circulating supply',c.circulating_supply==null?'Unavailable':new Intl.NumberFormat('en-US',{notation:'compact'}).format(c.circulating_supply)));body.append(metrics);
-  const link=el('a','external-link','View on CoinGecko');link.id='assetExternalLink';link.href='https://www.coingecko.com/en/coins/'+encodeURIComponent(c.id);link.target='_blank';link.rel='noopener noreferrer';link.append(icon('external-link'));body.append(link);
+  market.append(el('h3','detail-subtitle','Social context'));
+  market.append(el('p','muted',social.usable&&c.galaxy_score!==null?t('Galaxy Score {score}/100{sentiment} · LunarCrush, {date}. Symbol-based match; indicative only.',{score:c.galaxy_score,sentiment:c.sentiment!==null?t(' · sentiment {value}%',{value:c.sentiment}):'',date:date(social.stamp)}):'LunarCrush data unavailable for this asset.'));
+  const metrics=el('div','detail-grid');metrics.append(metric('Market cap',big(c.market_cap)),metric('24H volume',big(c.total_volume)),metric('All-time high',price(c.ath)),metric('Circulating supply',c.circulating_supply==null?'Unavailable':new Intl.NumberFormat(locale(),{notation:'compact'}).format(c.circulating_supply)));market.append(metrics);
+  const link=el('a','external-link','View on CoinGecko');link.id='assetExternalLink';link.href='https://www.coingecko.com/en/coins/'+encodeURIComponent(c.id);link.target='_blank';link.rel='noopener noreferrer';link.append(icon('external-link'));market.append(link);
+  selectAssetTab(state.assetTab);$('assetDialog').scrollTop=scrollTop;
   if(restoreFocus)$(restoreFocus)?.focus({preventScroll:true});
 }
 function drawSpark(cnv,points){const w=cnv.clientWidth,h=96,dpr=Math.min(devicePixelRatio||1,2);cnv.width=w*dpr;cnv.height=h*dpr;const x=cnv.getContext('2d');x.scale(dpr,dpr);const min=Math.min(...points),max=Math.max(...points),range=max-min||1;x.beginPath();points.forEach((p,i)=>{const a=i/(points.length-1)*(w-8)+4,b=h-8-(p-min)/range*(h-16);i?x.lineTo(a,b):x.moveTo(a,b);});x.strokeStyle=points.at(-1)>=points[0]?'#7cdeb1':'#ff9da6';x.lineWidth=2;x.stroke();}
@@ -234,15 +300,18 @@ async function refresh(){
   }
 }
 function prepareImport(){const file=$('importFile').files[0];if(!file)return;if(file.size>16384){toast('Watchlist files must be smaller than 16 KB.');return;}
-  file.text().then(raw=>{pendingImport=C.importWatchlist(raw);$('importSummary').textContent=pendingImport.coins.length+' coins in this file. Display preferences will also be restored.';updateImportPreview();openDialog('importDialog');}).catch(e=>toast(e.message)).finally(()=>$('importFile').value='');
+  file.text().then(raw=>{pendingImport=C.importWatchlist(raw);$('importSummary').textContent=t('{n} coins in this file. Display preferences will also be restored.',{n:pendingImport.coins.length});updateImportPreview();openDialog('importDialog');}).catch(e=>toast(e.message)).finally(()=>$('importFile').value='');
 }
 function updateImportPreview(){
   if(!pendingImport)return;
-  try{const ids=C.mergeWatchlist([...state.selected],pendingImport.coins,document.querySelector('[name="importMode"]:checked').value==='replace');const unknown=ids.filter(id=>!byId(id)).length;$('importWarning').textContent=ids.length+' coins after import'+(unknown?' · '+unknown+' currently unavailable; identifiers will be kept.':'.');$('confirmImport').disabled=false;}catch(e){$('importWarning').textContent=e.message;$('confirmImport').disabled=true;}
+  try{const ids=C.mergeWatchlist([...state.selected],pendingImport.coins,document.querySelector('[name="importMode"]:checked').value==='replace');const unknown=ids.filter(id=>!byId(id)).length;$('importWarning').textContent=t('{n} coins after import',{n:ids.length})+(unknown?t(' · {n} currently unavailable; identifiers will be kept.',{n:unknown}):'.');$('confirmImport').disabled=false;}catch(e){$('importWarning').textContent=t(e.message);$('confirmImport').disabled=true;}
 }
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(d=>{d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close();}});d.addEventListener('close',()=>{if(d.id==='assetDialog')state.activeCoin=null;const opener=d._opener;if(opener?.isConnected)opener.focus();else if(opener?.id)$(opener.id)?.focus();else if(opener?.dataset.tile)$('tileButtons').querySelector(`[data-tile="${CSS.escape(opener.dataset.tile)}"]`)?.focus();else if(opener?.dataset.signal)$('signalList').querySelector(`[data-signal="${CSS.escape(opener.dataset.signal)}"]`)?.focus();});});
 $('manageBtn').addEventListener('click',()=>{manageLimit=80;renderChoosers();openDialog('manageDialog');$('manageSearch').focus();});
+$('homeLink').addEventListener('click',e=>{e.preventDefault();state.onboarding=true;state.picking=false;state.view='fav';render();});
+$('buildWatchlist').addEventListener('click',()=>{if(state.selected.size){state.onboarding=false;render();$('manageBtn').focus();}else{state.picking=true;render();$('welcomeSearch').focus();}});
+$('exploreMarket').addEventListener('click',()=>{state.onboarding=false;state.view='market';render();document.querySelector('[data-view="market"]').focus();});
 $('settingsBtn').addEventListener('click',()=>openDialog('settingsDialog'));
 $('methodBtn').addEventListener('click',()=>openDialog('methodDialog'));
 $('finishWelcome').addEventListener('click',()=>{state.onboarding=false;state.settings.filter='all';save();render();$('manageBtn').focus();});
@@ -253,12 +322,13 @@ document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',(
 $('filterSelect').addEventListener('change',e=>changeSetting('filter',e.target.value));$('sizeSelect').addEventListener('change',e=>changeSetting('metric',e.target.value));
 $('resetFilter').addEventListener('click',()=>changeSetting('filter','all'));
 $('signalsToggle').addEventListener('click',()=>changeSetting('signalsOpen',!state.settings.signalsOpen));$('closeSignals').addEventListener('click',()=>{changeSetting('signalsOpen',false);$('signalsToggle').focus();});
-for(const id of ['homeImport','importBtn'])$(id).addEventListener('click',()=>$('importFile').click());
+for(const id of ['homeImport','introImport','importBtn'])$(id).addEventListener('click',()=>$('importFile').click());
 $('importFile').addEventListener('change',prepareImport);document.querySelectorAll('[name="importMode"]').forEach(n=>n.addEventListener('change',updateImportPreview));
 $('confirmImport').addEventListener('click',()=>{try{state.selected=new Set(C.mergeWatchlist([...state.selected],pendingImport.coins,document.querySelector('[name="importMode"]:checked').value==='replace'));state.settings=pendingImport.settings;state.onboarding=state.selected.size===0;save();$('importDialog').close();if($('settingsDialog').open)$('settingsDialog').close();pendingImport=null;render();renderChoosers();toast('Watchlist imported.');}catch(e){toast(e.message);}});
 $('exportBtn').addEventListener('click',()=>{const data={version:1,coins:[...state.selected],settings:state.settings};const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='orbit2-watchlist.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 $('fullscreenBtn').addEventListener('click',async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else if(document.documentElement.requestFullscreen)await document.documentElement.requestFullscreen();else toast('Full screen is not supported by this browser.');}catch{toast('Full screen could not be opened.');}});
-document.addEventListener('fullscreenchange',()=>{const active=!!document.fullscreenElement,b=$('fullscreenBtn');b.title=active?'Exit full screen':'Full screen';b.setAttribute('aria-label',b.title);b.replaceChildren(icon(active?'minimize':'maximize'));drawMap();});
+document.addEventListener('fullscreenchange',()=>{const active=!!document.fullscreenElement,b=$('fullscreenBtn');b.title=t(active?'Exit full screen':'Full screen');b.setAttribute('aria-label',b.title);b.replaceChildren(icon(active?'minimize':'maximize'));drawMap();});
+document.addEventListener('orbit:language',()=>{render();renderChoosers();if($('assetDialog').open)renderAsset();if(pendingImport){$('importSummary').textContent=t('{n} coins in this file. Display preferences will also be restored.',{n:pendingImport.coins.length});updateImportPreview();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 window.addEventListener('storage',e=>{if(e.key===FAV_KEY){const v=readStorage(FAV_KEY,[]);if(Array.isArray(v))state.selected=new Set(v.filter(id=>typeof id==='string'&&C.ID.test(id)).slice(0,50));render();renderChoosers();}});
 new ResizeObserver(drawMap).observe($('stage'));

@@ -25,8 +25,14 @@ async function main(){
     page.on('pageerror',e=>errors.push(e.message));
     page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
     page.on('request',r=>{if(new URL(r.url()).origin!==origin)external.push(r.url());});
-    await page.goto(origin+'/web/');await page.waitForSelector('.coin-choice');
+    await page.goto(origin+'/web/');await page.waitForFunction(()=>state.snapshot);
     await page.screenshot({path:path.join(screenshots,'home.png')});
+    assert.equal(await page.locator('#homeIntro').isVisible(),true);
+    assert.equal(await page.locator('#homeFaq details').count(),6);
+    assert.equal(await page.locator('.project-links .support-link').isVisible(),true);
+    assert.equal(await page.locator('.tile-hit').count(),6);
+    assert.equal(await page.locator('#watchCount').textContent(),'0');
+    await page.locator('#buildWatchlist').click();
     // Build a real-data watchlist through the actual onboarding controls.
     for(const name of ['Bitcoin','Ethereum','Solana','Chainlink','Uniswap','Aave']){
       await page.locator('#welcomeSearch').fill(name);
@@ -50,6 +56,8 @@ async function main(){
     // Keyboard navigation and modal focus restore.
     await page.locator('.tile-hit').first().focus();await page.keyboard.press('ArrowRight');await page.keyboard.press('Enter');
     assert.equal(await page.locator('#assetDialog').evaluate(e=>e.open),true);
+    assert.equal(await page.locator('#assetTab-signals').getAttribute('aria-selected'),'true');
+    assert.equal(await page.locator('.signal-reading').count(),3);
     await page.keyboard.press('Escape');assert.equal(await page.evaluate(()=>document.activeElement.className),'tile-hit');
     await page.locator('[data-tf="7d"]').click();await page.locator('#sizeSelect').selectOption('market_cap');
     await page.reload();await page.waitForSelector('.tile-hit');
@@ -100,7 +108,7 @@ async function main(){
     await testPage.route('**/data.json',r=>mode==='offline'?r.abort():r.fulfill({json:mode==='stale'?{...fixture,snapshot:'2020-01-01T00:00:00Z'}:fixture}));
     await testPage.goto(origin+'/web/');await testPage.waitForFunction(()=>!state.loading);
     assert.equal(await testPage.locator('#mapMessageTitle').textContent(),'Market data unavailable');
-    mode='fresh';await testPage.evaluate(()=>refresh());await testPage.waitForSelector('.coin-choice');
+    mode='fresh';await testPage.evaluate(()=>refresh());await testPage.locator('#buildWatchlist').click();await testPage.waitForSelector('.coin-choice');
     assert.equal(await testPage.locator('#welcomeResults img[src="x"]').count(),0);
     await testPage.evaluate(()=>{toggleCoin('test-0');state.onboarding=false;render();});
     const signal=await testPage.locator('#signalCount').textContent();assert.ok(Number(signal)>0);

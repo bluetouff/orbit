@@ -101,12 +101,19 @@ ignored by Git.
 
 ## Watchlists and Signals
 
-- The first screen is a coin selector with a heatmap preview. Existing watchlists
-  open directly. Favorites retain the `orbit.favs.v1` key and are capped at 50.
+- New visitors see the home introduction, a real-data market preview, FAQ and
+  visible l0g/support links. Preview coins are not added to favorites. Existing
+  watchlists open directly; the Orbit logo returns home without clearing them.
+  `?view=home` opens that home explicitly. Favorites retain the `orbit.favs.v1`
+  key and are capped at 50.
+- French and English cover the app, FAQ, methodology and legal page. The browser
+  language is used initially; explicit choices use `orbit.locale.v1` locally.
 - Tiles show logos and returns, scaled from each tile's dimensions. Areas follow
   performance by default, or market cap / volume. Selection order stays stable.
 - The Signals panel lists anomalies and divergences. Each entry opens its inputs,
   threshold, reference size, source, collection time and methodology.
+  Asset dialogs open on signed signal gauges; market history and social context
+  remain in a separate keyboard-accessible tab. No threshold or formula changes.
 - The reference includes all valid assets in the snapshot, including stablecoins,
   not just the visible watchlist. At least 20 valid observations are required.
 - Price anomalies use absolute population z-scores above 2. Activity anomalies
@@ -131,14 +138,16 @@ plan limits must be checked independently before changing collection frequency.
 ## Checks
 
 ```bash
-node --test tests/frontend.test.cjs
+node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 node --check web/core.js
 node --check web/app.js
+node --check web/i18n.js
 ```
 
 Optional end-to-end checks use an existing Playwright installation:
-`node tests/browser.cjs` (set `NODE_PATH` when it is installed outside this repo).
+`node tests/browser.cjs` and `node tests/experience-browser.cjs` (set `NODE_PATH`
+when it is installed outside this repo).
 Start the preview on port 8767 first, or set `ORBIT_PREVIEW_URL` to its loopback
 origin. Real-data screenshots cover 320px / 390px mobile, desktop and 4K. Failure
 tests use isolated synthetic fixtures, never production or preview data.

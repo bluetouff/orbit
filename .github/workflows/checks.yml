@@ -21,6 +21,7 @@ jobs:
           python-version: '3.11'
       - run: node --check web/core.js
       - run: node --check web/app.js
-      - run: node --test tests/frontend.test.cjs
+      - run: node --check web/i18n.js
+      - run: node --test tests/*.test.cjs
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
       - run: git diff --check
