@@ -29,11 +29,12 @@ web/
   data.json                  local snapshot link (generated, never committed)
 deploy/
   orbit-snapshot.service     hardened systemd oneshot unit
-  orbit-snapshot.timer       trigger (crypto markets about every 30 s + at boot)
+  orbit-snapshot.timer       trigger (about every 30 s; each feed has its own cache)
   orbit.l0g.fr.conf          Apache vhost (strict CSP, data.json + logos aliases)
 scripts/
   validate_snapshot.py       validates the public orbit.json contract
   preview.py                 loopback preview using public or local real snapshots
+  verify_collection.py       read-only proof of two renewals per market feed
   deploy_front.py            immutable static release with guarded rollback
   deploy_release.py          coordinated collector + frontend release
 RUNBOOK.md                   detailed deployment procedure
@@ -41,8 +42,8 @@ RUNBOOK.md                   detailed deployment procedure
 
 ## Short Version
 
-1. `build_snapshot.py` calls CoinGecko markets server-side on each timer run,
-   while CoinGecko global, LunarCrush and FRED are TTL-cached. It downloads
+1. `build_snapshot.py` collects each feed independently. Crypto and xStocks
+   have a 60-second default cache; global, LunarCrush and FRED have longer caches. It downloads
    missing logos in bounded batches and atomically writes `orbit.json` into
    `/var/lib/orbit`.
 2. Apache serves `web/` as static files and exposes `/data.json` + `/logos/` as
@@ -110,10 +111,10 @@ ignored by Git.
 The builder adds CoinGecko's `xstocks-ecosystem` category to the crypto feed,
 deduplicated by CoinGecko ID. One request retrieves up to 250 category members
 with 1H / 24H / 7D / 30D returns and a seven-day sparkline when supplied.
-`ORBIT_XSTOCKS_REFRESH_SEC` defaults to 120 seconds (bounded to 60–180).
+`ORBIT_XSTOCKS_REFRESH_SEC` defaults to 60 seconds (bounded to 60–180).
 The category and endpoint were checked against the public API; see the
 [CoinGecko market contract](https://docs.coingecko.com/reference/coins-markets).
-This adds at most one request every two minutes with the default setting,
+This adds at most one request per minute with the default setting,
 independent of visitors. Check the provider plan's monthly budget before release.
 
 - The **xStocks** market view shows up to 50 category members ordered by token
@@ -130,7 +131,10 @@ independent of visitors. Check the provider plan's monthly budget before release
 - xStocks never enter the crypto median, breadth, anomaly/activity scores or
   BTC-relative comparisons. They receive no LunarCrush symbol matches.
 - Token sheets open directly on token market data, without crypto signal gauges.
-  Old quotes are marked, and stale tokens use neutral heatmap colors. These are
+  Quotes aged 3–10 minutes are explicitly delayed, with their original dates;
+  older, undated or invalid quotes use neutral heatmap colors. This is a display
+  policy, not a real-time provider guarantee. Crypto signals retain their strict
+  three-minute checks. These are
   tracker certificates with economic exposure, without shareholder voting rights;
   see [the issuer documentation](https://docs.xstocks.fi/docs/frequently-asked-questions).
 - Logos remain same-origin. HTTPS host/port restrictions and disabled redirects
@@ -246,12 +250,17 @@ collector as well as the frontend. It validates the host contract, pauses only
 the timer during activation, saves the previous collector, validates a newly
 generated real crypto/xStocks snapshot, then publishes the four entry pages
 with immutable assets. Failures restore the collector and affected entry pages.
-Provider credentials, Apache configuration and source cadence are preserved.
+Provider credentials, Apache configuration and the systemd timer are preserved.
+Feed cadence follows the builder defaults or existing environment overrides.
 The precise administrator commands and rollback procedure are in [RUNBOOK.md](RUNBOOK.md).
 
 CoinGecko 429 responses trigger a shared, persistent cooldown across market,
 xStocks and global requests. The collector honors `Retry-After`, uses bounded
-exponential backoff when the header is absent, and preserves snapshot timestamps.
+exponential backoff when the header is absent, and preserves quote and successful
+collection timestamps. A new snapshot may report a failed attempt and refresh
+independent sources. Requests are spaced by at least two seconds within a run.
+A failed crypto page never publishes a partial universe or prevents xStocks
+and macro collection; the shared CoinGecko cooldown still applies.
 The private cooldown file contains only numeric transport metadata, is outside
 the web root and is ignored by Git. See [HTTP 429 recovery](RUNBOOK.md#coingecko-http-429-recovery)
 for deployment waiting and rollback behavior.

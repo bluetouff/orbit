@@ -67,6 +67,10 @@ test('failed source attempts do not masquerade as last successful retrievals',()
   const s=C.normalizeSnapshot(raw());s.status.fred={ok:false,fetched_at:stamp,last_success_at:'2025-12-31T20:00:00Z'};
   assert.equal(C.sourceState(s,'fred',now).stamp,'2025-12-31T20:00:00Z');assert.equal(C.sourceState(s,'fred',now).usable,false);
   delete s.status.fred.last_success_at;assert.equal(C.sourceState(s,'fred',now).stamp,null);
+  s.status.coingecko_markets={ok:false,attempted_at:stamp};
+  const failed=C.sourceState(s,'coingecko_markets',now);
+  assert.equal(failed.kind,'unavailable');assert.equal(failed.age,null);
+  assert.equal(failed.stamp,null); // A new JSON file is not a collection success.
 });
 test('import validates the complete file before changing a watchlist',()=>{
   const good=JSON.stringify({version:1,coins:['bitcoin','bitcoin','ethereum'],settings:{tf:'7d',metric:'total_volume'}});
@@ -202,4 +206,31 @@ test('nullable token metrics remain missing and legacy xStocks stay outside cryp
   const s=C.normalizeSnapshot(data),c=s.coins[1];assert.equal(c.asset_type,'xstock');assert.equal(c.market_cap,null);assert.equal(c.total_volume,null);
   assert.equal(C.analyze(s,'24h',now).referenceCount,1);
   data.coins[1].current_price=null;assert.equal(C.normalizeSnapshot(data).coins.length,1);
+});
+
+test('delayed token quotes are explicit and never extend crypto signal eligibility',()=>{
+  const r=raw(1);r.status={coingecko_xstocks:{ok:true,fetched_at:stamp,ttl:60}};
+  r.coins[0]={...r.coins[0],id:'test-xstock',asset_type:'xstock',last_updated:new Date(now-180001).toISOString()};
+  let s=C.normalizeSnapshot(r),q=C.quoteState(s,s.coins[0],now);
+  assert.equal(q.kind,'delayed');assert.equal(q.age,180001);assert.equal(q.usable,true);
+  assert.equal(C.analyze(s,'24h',now).byId.get('test-xstock').available,false);
+  for(const [offset,kind,usable] of [[600000,'delayed',true],[600001,'stale',false],[-60001,'stale',false]]){
+    r.coins[0].last_updated=new Date(now-offset).toISOString();s=C.normalizeSnapshot(r);q=C.quoteState(s,s.coins[0],now);
+    assert.equal(q.kind,kind);assert.equal(q.usable,usable);
+  }
+  delete r.coins[0].last_updated;s=C.normalizeSnapshot(r);assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
+  r.coins[0].last_updated='invalid';s=C.normalizeSnapshot(r);assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
+});
+
+test('token collection deadline follows bounded cadence independently from quote age',()=>{
+  const r=raw(1);r.status={coingecko_xstocks:{ok:true,fetched_at:stamp,ttl:120}};
+  const s=C.normalizeSnapshot(r);
+  assert.equal(C.sourceState(s,'coingecko_xstocks',now+240000).usable,true);
+  assert.equal(C.sourceState(s,'coingecko_xstocks',now+240001).usable,false);
+  s.status.coingecko_xstocks.ttl=86400;
+  assert.equal(C.sourceState(s,'coingecko_xstocks',now+300001).usable,false);
+  s.status.coingecko_xstocks.ok=false;
+  assert.equal(C.sourceState(s,'coingecko_xstocks',now).usable,false);
+  // The crypto contract remains three minutes.
+  assert.equal(C.sourceState(s,'coingecko_markets',now+180001).usable,false);
 });

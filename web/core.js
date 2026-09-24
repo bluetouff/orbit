@@ -46,6 +46,7 @@
       status[key]={ok:s.ok===true,enabled:s.enabled!==false,reused:s.reused===true,
         fetched_at:time(s.fetched_at)!==null?s.fetched_at:null,
         last_success_at:time(s.last_success_at)!==null?s.last_success_at:null,
+        retry_at:time(s.retry_at)!==null?s.retry_at:null,
         ttl:num(s.ttl,1,86400),error:text(s.error,60)};
     }
     const macro={};
@@ -60,9 +61,11 @@
   }
   function sourceState(snapshot,key,now=Date.now()) {
     const s=snapshot?.status?.[key];
-    const stamp=s?.last_success_at || (s?.ok===false?null:s?.fetched_at) || (key==='coingecko_markets'?snapshot?.snapshot:null);
+    const stamp=s?.last_success_at || (s?.ok===false?null:s?.fetched_at) || (key==='coingecko_markets'&&!s?snapshot?.snapshot:null);
     const ms=time(stamp), age=ms===null?null:now-ms;
-    const ttl={coingecko_markets:180,coingecko_xstocks:180,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
+    // The xStocks fetch interval plus two minutes for timer, transport and page
+    // polling. Quote timestamps are assessed separately, never reset by fetches.
+    const ttl={coingecko_markets:180,coingecko_xstocks:Math.min(180,Math.max(60,s?.ttl||60))+120,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
     let kind='current';
     if (s?.enabled===false) kind='disabled';
     else if (s?.ok===false) kind='unavailable';
@@ -85,7 +88,11 @@
   }
   function quoteState(snapshot,c,now=Date.now()) {
     const source=sourceState(snapshot,assetSource(c),now),observed=observation(c,now);
-    return {source,observed,usable:source.usable&&['current','unknown'].includes(observed)};
+    const stamp=time(c.last_updated),age=stamp===null?null:now-stamp;
+    // Token quotes are a delayed market view, never a crypto signal input.
+    // Keep the delay visible; after ten minutes even the map colors are disabled.
+    const kind=isXstock(c)&&observed==='stale'&&age>=0&&age<=600000?'delayed':observed;
+    return {source,observed,kind,age,usable:source.usable&&(isXstock(c)?['current','delayed'].includes(kind):['current','unknown'].includes(observed))};
   }
   function relativeBitcoin(c,btc,key,current,now) {
     const result={value:null,reason:null,dated:false};

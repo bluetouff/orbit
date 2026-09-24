@@ -41,9 +41,10 @@ LOGO_DIR   = os.environ.get("ORBIT_LOGO_DIR", os.path.join(OUT_DIR, "logos"))
 LOGO_MAX   = env_int("ORBIT_LOGO_MAX", TOP, 0, TOP)           # cap logo universe
 LOGO_FETCH_PER_RUN = env_int("ORBIT_LOGO_FETCH_PER_RUN", 60, 0, 250)
 GLOBAL_REFRESH_SEC = env_int("ORBIT_GLOBAL_REFRESH_SEC", 120, 30, 3600)
+MARKETS_REFRESH_SEC = env_int("ORBIT_MARKETS_REFRESH_SEC", 60, 60, 180)
 SOCIAL_REFRESH_SEC = env_int("ORBIT_SOCIAL_REFRESH_SEC", 900, 60, 86400)
 MACRO_REFRESH_SEC  = env_int("ORBIT_MACRO_REFRESH_SEC", 3600, 300, 86400)
-XSTOCKS_REFRESH_SEC = env_int("ORBIT_XSTOCKS_REFRESH_SEC", 120, 60, 180)
+XSTOCKS_REFRESH_SEC = env_int("ORBIT_XSTOCKS_REFRESH_SEC", 60, 60, 180)
 XSTOCKS_MAX = 250  # One bounded category request, independent of visitor traffic.
 TIMEOUT    = env_float("ORBIT_TIMEOUT", 20, 2, 60)
 MAX_BYTES  = env_int("ORBIT_MAX_BYTES", 40 * 1024 * 1024, 1024 * 1024, 80 * 1024 * 1024)
@@ -75,6 +76,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=_CTX))
+_CG_LAST_REQUEST = None
 
 
 class CoinGeckoCooldown(Exception):
@@ -164,7 +166,7 @@ def load_previous():
 
 def status_due(prev, key, ttl):
     st = ((prev.get("status") or {}).get(key) or {})
-    fetched = parse_ts(st.get("fetched_at"))
+    fetched = parse_ts(st.get("attempted_at") or st.get("fetched_at"))
     return not fetched or fetched > time.time() or (time.time() - fetched) >= ttl
 
 
@@ -175,6 +177,19 @@ def mark_reused(status, ttl):
     status["ttl"] = ttl
     if fetched:
         status["age_seconds"] = max(0, int(time.time() - fetched))
+    return status
+
+
+def failed_status(previous, error, ttl, retained):
+    """A failed attempt never replaces the last successful collection date."""
+    successful = previous.get('last_success_at') or (previous.get('fetched_at') if previous.get('ok') else None)
+    status = {'ok': False, 'attempted_at': utc_now(), 'fetched_at': successful,
+              'last_success_at': successful, 'error': type(error).__name__,
+              'reused': bool(retained), 'ttl': ttl}
+    if isinstance(error, CoinGeckoCooldown):
+        status['retry_at'] = datetime.datetime.fromtimestamp(error.retry_at, datetime.timezone.utc).isoformat()
+    elif isinstance(error, urllib.error.HTTPError):
+        status['http_status'] = error.code
     return status
 
 
@@ -204,9 +219,15 @@ def fetch(url, headers=None, binary=False):
 
 
 def cg(path, params):
+    global _CG_LAST_REQUEST
     state = read_rate_limit()
     if state['retry_at'] > time.time():
         raise CoinGeckoCooldown(state['retry_at'])
+    # Page, category and global calls used to arrive in the same burst.
+    # This never retries a request and does not bypass the shared 429 deadline.
+    if _CG_LAST_REQUEST is not None:
+        time.sleep(max(0, 2 - (time.monotonic() - _CG_LAST_REQUEST)))
+    _CG_LAST_REQUEST = time.monotonic()
     headers = {f"x-cg-{CG_TIER}-api-key": CG_KEY} if CG_KEY and CG_TIER in ("demo", "pro") else None
     try:
         return fetch(f"{CG_BASE}/{path}?{urllib.parse.urlencode(params)}", headers=headers)
@@ -358,9 +379,7 @@ def get_xstocks(previous):
             "valid": len(coins), "invalid": len(rows) - len(coins), "capped": len(rows) == XSTOCKS_MAX}
     except Exception as error:
         # Class only: never publish URLs, credentials or upstream response bodies.
-        return old_coins, [], {"ok": False, "error": type(error).__name__, "fetched_at": utc_now(),
-            "last_success_at": old_status.get("last_success_at") or (old_status.get("fetched_at") if old_status.get("ok") else None),
-            "reused": bool(old_coins), "ttl": XSTOCKS_REFRESH_SEC}
+        return old_coins, [], failed_status(old_status, error, XSTOCKS_REFRESH_SEC, old_coins)
 
 
 def get_social():
@@ -438,13 +457,25 @@ def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(LOGO_DIR, exist_ok=True)
     previous = load_previous()
-    markets = get_markets()
-    markets_fetched_at = utc_now()
-    if not markets:
-        sys.stderr.write("no market data; aborting (keeping previous snapshot)\n")
-        sys.exit(1)
-
     prev_status = previous.get("status") or {}
+    old_crypto = [dict(c) for c in previous.get('coins', []) if isinstance(c, dict) and c.get('asset_type', 'crypto') == 'crypto']
+    markets, retained_crypto = [], []
+    if old_crypto and not status_due(previous, 'coingecko_markets', MARKETS_REFRESH_SEC):
+        retained_crypto = old_crypto
+        markets_status = mark_reused(prev_status.get('coingecko_markets'), MARKETS_REFRESH_SEC)
+    else:
+        try:
+            markets = get_markets()
+            if not markets or not any(normalize_coin(c, {}, False) for c in markets):
+                raise ValueError('No valid crypto markets')
+            markets_status = {'ok': True, 'fetched_at': utc_now(), 'ttl': MARKETS_REFRESH_SEC}
+            markets_status['last_success_at'] = markets_status['fetched_at']
+        except Exception as error:
+            retained_crypto = old_crypto
+            markets_status = failed_status(prev_status.get('coingecko_markets') or {}, error, MARKETS_REFRESH_SEC, retained_crypto)
+
+    # A crypto failure must not prevent the independent xStocks/social/macro
+    # jobs. CoinGecko's shared cooldown still blocks every CoinGecko request.
     xstocks, xstock_logos, xstocks_status = get_xstocks(previous)
     xstock_ids = {c["id"] for c in xstocks}
     # Category membership is authoritative. Exclude recognizable xStocks from
@@ -468,8 +499,7 @@ def build():
         except Exception as e:
             sys.stderr.write(f"global skip: {type(e).__name__}\n")
             glob = previous.get("global")
-            global_status = {"ok": bool(glob), "error": type(e).__name__, "reused": bool(glob),
-                             "fetched_at": (prev_status.get("coingecko_global") or {}).get("fetched_at")}
+            global_status = failed_status(prev_status.get('coingecko_global') or {}, e, GLOBAL_REFRESH_SEC, glob)
     else:
         glob = previous.get("global")
         global_status = mark_reused(prev_status.get("coingecko_global"), GLOBAL_REFRESH_SEC)
@@ -488,7 +518,7 @@ def build():
         macro_status = mark_reused(prev_status.get("fred"), MACRO_REFRESH_SEC)
 
     coins = []
-    symbols = Counter((c.get("symbol") or "").upper() for c in markets)
+    symbols = Counter((c.get("symbol") or "").upper() for c in (markets or retained_crypto))
     social = {sym: value for sym, value in social.items() if symbols[sym] == 1}
     seen_ids = set()
     invalid = 0
@@ -499,6 +529,17 @@ def build():
             continue
         seen_ids.add(o["id"])
         coins.append(o)
+    if retained_crypto:
+        coins = [c for c in retained_crypto if c['id'] not in xstock_ids
+                 and not re.search(r'xstocks?$', c['id'], re.I)
+                 and not re.search(r'\bxstocks?\b', c.get('name', ''), re.I)]
+        for c in coins:
+            for key in ('galaxy_score', 'sentiment', 'social_dominance', 'social_source'):
+                c.pop(key, None)
+            if c.get('symbol', '').upper() in social:
+                c.update(normalize_social(social[c['symbol'].upper()]))
+    else:
+        markets_status.update(raw=len(markets), valid=len(coins), invalid=invalid)
     crypto_count = len(coins)
     coins.extend(xstocks)
     if not coins:
@@ -520,20 +561,19 @@ def build():
         c["has_logo"] = os.path.exists(os.path.join(LOGO_DIR, c["id"] + ".png"))
 
     # Reset only after all CoinGecko feeds recovered, never between market pages.
-    if crypto_count and xstocks_status.get('ok') and global_status.get('ok') and not global_status.get('error') and read_rate_limit()['retry_at'] <= time.time():
+    if crypto_count and markets_status.get('ok') and xstocks_status.get('ok') and global_status.get('ok') and not global_status.get('error') and read_rate_limit()['retry_at'] <= time.time():
         try:
             os.unlink(rate_limit_path())
         except FileNotFoundError:
             pass
     snapshot = {
-        "snapshot": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "snapshot": utc_now(),
         "count": len(coins),
         "global": glob,
         "macro": macro,
         "social_enabled": bool(LUNAR_KEY),
         "status": {
-            "coingecko_markets": {"ok": bool(crypto_count), "raw": len(markets), "valid": crypto_count,
-                                  "invalid": invalid, "fetched_at": markets_fetched_at},
+            "coingecko_markets": markets_status,
             "coingecko_xstocks": xstocks_status,
             "coingecko_global": global_status,
             "lunarcrush": social_status,
@@ -547,7 +587,8 @@ def build():
         json.dump(snapshot, f, separators=(",", ":"))
     os.replace(tmp, os.path.join(OUT_DIR, "orbit.json"))
     os.chmod(os.path.join(OUT_DIR, "orbit.json"), 0o644)
-    sys.stderr.write(f"snapshot ok: {len(coins)} coins, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
+    health = 'ok' if markets_status.get('ok') and xstocks_status.get('ok') else 'degraded'
+    sys.stderr.write(f"snapshot {health}: {len(coins)} coins, crypto={markets_status.get('error', 'ok')}, xstocks={xstocks_status.get('error', 'ok')}, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
 
 
 if __name__ == "__main__":

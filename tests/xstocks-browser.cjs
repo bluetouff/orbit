@@ -55,6 +55,7 @@ async function main(){
         assert.equal(await page.evaluate(()=>document.getElementById('assetDialog').scrollWidth<=document.getElementById('assetDialog').clientWidth),true);
         await page.screenshot({path:path.join(screenshots,`asset-${lang}-${width}.png`)});
         await page.keyboard.press('Escape');
+        await page.waitForFunction(()=>document.activeElement?.dataset.tile==='apple-xstock');
         assert.equal(await page.evaluate(()=>document.activeElement.dataset.tile),'apple-xstock');
       }
     }
@@ -66,14 +67,24 @@ async function main(){
     await p.route('**/data.json',r=>r.fulfill({json:data}));
     await p.goto(origin+'/web/');await p.waitForFunction(()=>state.snapshot);
     await p.locator('#buildWatchlist').click();await p.locator('#welcomeCatalog [data-catalog="xstock"]').click();
-    assert.match(await p.locator('#welcomeCatalogNote').textContent(),/Older data/);
+    assert.match(await p.locator('#welcomeCatalogNote').textContent(),/Collection interrupted/);
     assert.equal(await p.locator('img[src="x"]').count(),0);
     await p.locator('#welcomeResults .coin-choice').click();await p.locator('#finishWelcome').click();
     await p.locator('.tile-hit').click();
-    assert.match(await p.locator('.quote-warning').textContent(),/not current/);
+    assert.match(await p.locator('.quote-warning').textContent(),/Collection interrupted/);
     assert.equal(await p.locator('#assetIdentity img[src="x"]').count(),0);
     const missing=await p.locator('.detail-grid .detail-metric b').allTextContents();assert.ok(missing.includes('Unavailable'));
     assert.equal(await p.locator('.signal-reading').count(),0);
+    // Recovery clears a collection error while retaining the provider's delay.
+    data.status.coingecko_xstocks={ok:true,fetched_at:stamp,last_success_at:stamp,ttl:60};
+    data.coins[0].last_updated=new Date(Date.now()-5*60000).toISOString();
+    await p.evaluate(()=>refresh());
+    assert.equal(await p.locator('.quote-warning').count(),0);
+    assert.match(await p.locator('#assetContent').textContent(),/Delayed quote/);
+    assert.match(await p.locator('#sourceStatus').textContent(),/Collection current/);
+    data.coins[0].last_updated=new Date(Date.now()-11*60000).toISOString();
+    await p.evaluate(()=>refresh());
+    assert.match(await p.locator('.quote-warning').textContent(),/older than 10 min/);
     await fixtures.close();
     console.log(JSON.stringify({result:'PASS',screenshots,checks:['real xStocks catalog','mixed favorites and persistence','FR/EN 320 to 1440px','keyboard and focus','no crypto signals on tokens','nullable metrics','stale feed','XSS text','same-origin requests','no cookies']},null,2));
   }finally{await browser.close();}

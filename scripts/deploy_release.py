@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guarded collector + frontend release, run by the administrator on the host.
 
-Preserves provider environment, service configuration, cadence and generated data.
+Preserves provider environment, service configuration, timer and generated data.
 Default: read-only checks. --apply and --rollback require root.
 """
 import argparse

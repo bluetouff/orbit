@@ -10,10 +10,10 @@ once server-side and served locally, so there is no browser request to the
 CoinGecko CDN.
 
 ```text
-  systemd timer (crypto markets about every 30 s)
+  systemd timer (wake about every 30 s)
         |
         v
-  build_snapshot.py --(HTTPS)--> CoinGecko markets every run
+  build_snapshot.py --(HTTPS)--> CoinGecko markets, 60 s cache
         |                          + TTL-cached global/social/macro/logos
         v
   /var/lib/orbit/orbit.json   (atomic write, outside web root)
@@ -137,9 +137,9 @@ User traffic is decoupled from data providers:
 - Provider call volume depends only on the systemd timer, not on traffic.
 
 With the default settings (`ORBIT_TOP=500`, ~30 s timer), one crypto-market
-build calls CoinGecko for 2 `coins/markets` pages. CoinGecko `global` is fetched
-at most every 120 s, the xStocks category at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
-3600 s. That is roughly 5 CoinGecko calls per minute at rest. This is not a
+refresh calls CoinGecko for 2 `coins/markets` pages, cached for 60 s by default. CoinGecko `global` is fetched
+at most every 120 s, the xStocks category at most every 60 s, LunarCrush at most every 900 s, and FRED at most every
+3600 s. That is at most 3.5 CoinGecko calls per minute on average at rest. This is not a
 guarantee against rate limits: check both minute limits and monthly credits on
 the actual provider plan. Browser population does not change that number.
 Missing logos are downloaded in bounded batches
@@ -164,14 +164,16 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 
 ## 8. Useful Settings
 
-- **Provider cadence**: `OnUnitActiveSec` in the timer (default 30 s for crypto
-  markets). The front rereads the JSON roughly every 30 s, with jitter and a
+- **Provider cadence**: `OnUnitActiveSec` in the timer (default 30 s wakeup; per-feed caches determine provider calls). The front rereads the JSON roughly every 30 s, with jitter and a
   pause in hidden tabs
   (30-45 seconds in `app.js`).
+- **Crypto TTL**: `ORBIT_MARKETS_REFRESH_SEC` (default 60, bounded 60–180). A failed
+  page retains the entire prior crypto universe and its original dates, while
+  independent feeds continue. CoinGecko calls are spaced by two seconds.
 - **Slow-source TTLs**: `ORBIT_GLOBAL_REFRESH_SEC` (default 120),
   `ORBIT_SOCIAL_REFRESH_SEC` (default 900), `ORBIT_MACRO_REFRESH_SEC`
   (default 3600). Non-due sources are reused from the previous snapshot.
-- **xStocks**: `ORBIT_XSTOCKS_REFRESH_SEC` (default 120 seconds) adds one
+- **xStocks**: `ORBIT_XSTOCKS_REFRESH_SEC` (default 60 seconds) adds one
   bounded category request, up to 250 assets. Check `status.coingecko_xstocks`
   separately from crypto freshness. A failure retains explicitly stale quotes.
   The xStocks map shows the top 50; all collected xStocks are searchable.
@@ -296,8 +298,21 @@ checkout. Verify xStocks quotes and original observation times, independent
 source status, mixed favorites, FR/EN navigation, mobile layout, CSP, no cookies
 and no third-party browser requests. The guide pages require no JavaScript.
 
-The additional category request is TTL-cached independently (120 seconds by
-default); existing crypto, macro and social provider settings are preserved.
+After activation, prove that both feeds actually renew twice (read-only HTTPS,
+at most five minutes, no provider API requests):
+
+```bash
+python3 scripts/verify_collection.py
+```
+
+The check rejects failed/stale collections, regressing timestamps, a frozen
+source hidden by new file timestamps, and a top-50 xStocks view where most
+quotes are undated or older than ten minutes. That quote-age boundary is the
+explicit delayed-display policy, not a real-time guarantee.
+
+The additional category request is TTL-cached independently (60 seconds by
+default); existing environment overrides remain effective. Crypto now also has
+a 60-second default cache. Timer, macro and social settings are preserved.
 Validate both per-minute limits and monthly credits for the actual provider plan.
 
 ## CoinGecko HTTP 429 recovery
@@ -318,7 +333,10 @@ this cooldown, which survives timer invocations.
 Without a usable header, waits progress through 120, 240, 480, 960 and
 1800 seconds. A supplied longer delay is preserved. Success on one market page
 does not reset the counter; a completed recovered collection does. During a
-market cooldown, the previous snapshot and all its timestamps remain untouched.
+market cooldown, previous quote and successful-collection timestamps remain
+untouched. The published snapshot reports a failed attempt and its retry date;
+non-CoinGecko sources can still update. A new snapshot timestamp is not proof
+that a market source succeeded.
 The journal contains a bounded status message rather than request details.
 
 Release activation allows at most one delayed retry, exclusively after a

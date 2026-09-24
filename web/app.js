@@ -63,8 +63,8 @@ function render(){
   const list=mapCoins(),returns=list.filter(c=>C.quoteState(state.snapshot,c).usable).map(c=>c[C.TF[state.settings.tf]]).filter(Number.isFinite);
   const xcount=list.filter(C.isXstock).length;
   $('mapScope').hidden=!xcount&&state.view!=='xstocks';
-  const older=list.filter(c=>C.isXstock(c)&&!C.quoteState(state.snapshot,c).usable).length;
-  $('mapScope').textContent=t('Token prices · separate from the crypto signals')+(older?' · '+t('{n} older quotes',{n:older}):'');
+  const older=list.filter(c=>C.isXstock(c)&&C.quoteState(state.snapshot,c).age>600000).length;
+  $('mapScope').textContent=t('Delayed token quotes')+(older?' · '+t('{n} quotes older than 10 min',{n:older}):'');
   for(const option of $('filterSelect').options)option.disabled=state.view==='xstocks'&&['anomaly','divergence'].includes(option.value);
   const missing=state.view==='fav'?state.selected.size-sourceCoins().length:0;
   $('mapSummary').textContent=t(list.length===1?'{n} asset':'{n} assets',{n:list.length})+(missing?t(' · {n} unavailable',{n:missing}):'')+(returns.length?t(' · mean {value}',{value:pct(returns.reduce((a,b)=>a+b,0)/returns.length)}):'');
@@ -92,9 +92,12 @@ function renderSources(){
   const box=$('sourceStatus');box.replaceChildren();
   for(const [key,name] of [['coingecko_markets','CoinGecko · Crypto'],['coingecko_xstocks','CoinGecko · xStocks'],['lunarcrush','LunarCrush'],['fred','FRED']]){
     const s=C.sourceState(state.snapshot,key),row=el('div','source-row'),heading=el('div','source-heading');
-    heading.append(el('b','',name),el('span','source-state '+s.kind,s.kind==='current'?'Current':s.kind));
+    heading.append(el('b','',name),el('span','source-state '+s.kind,s.kind==='current'?'Collection current':s.kind));
     row.append(heading,el('span','source-time',s.stamp?t('Collected {age}',{age:age(s.age)}):'Collection time unavailable'));
     row.title=t('Collected {date}',{date:date(s.stamp)});
+    if(key==='coingecko_xstocks')row.append(el('span','source-observation',t('Collection every ~{n} min · quotes may be delayed',{n:Math.ceil((state.snapshot?.status?.[key]?.ttl||60)/60)})));
+    const retry=state.snapshot?.status?.[key]?.retry_at;
+    if(!s.usable&&retry)row.append(el('span','source-observation',t('Provider pause · retry after {date}',{date:date(retry)})));
     if(key==='fred'){
       const m=state.snapshot?.macro;
       for(const [k,label] of [['us10y','10Y'],['usd','Broad USD']])if(m?.[k])row.append(el('span','source-observation',t(label)+' '+m[k].value+(k==='us10y'?'%':'')+' · '+t('observed')+' '+(m[k].date||t('unknown'))));
@@ -186,7 +189,7 @@ function paintMap(){
     paintTile(r);
     const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;
     const p=r.coin[C.TF[state.settings.tf]],events=eventsFor(r.coin)?.events||[];
-    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(C.isXstock(r.coin)&&!C.quoteState(state.snapshot,r.coin).usable?', '+t('Older quote'):'')+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
+    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(C.isXstock(r.coin)?', '+t('Price observed {date}',{date:date(r.coin.last_updated)}):'')+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
     b.style.left=r.x+'px';b.style.top=r.y+'px';b.style.width=r.w+'px';b.style.height=r.h+'px';
     b.addEventListener('pointerenter',()=>showTooltip(r));b.addEventListener('pointerleave',hideTooltip);b.addEventListener('focus',()=>showTooltip(r));b.addEventListener('blur',hideTooltip);
     b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b);buttons[(index+delta+buttons.length)%buttons.length]?.focus();}});
@@ -219,7 +222,7 @@ function paintTile(r){
   if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=xstock?'#d3dee4':result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(xstock?c.symbol.toUpperCase():t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
   ctx.restore();
 }
-function showTooltip(r){const t=$('tileTooltip');t.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]]);t.hidden=false;t.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-t.offsetWidth-8))+'px';t.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-t.offsetHeight-8))+'px';}
+function showTooltip(r){const node=$('tileTooltip');node.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]])+(C.isXstock(r.coin)?' · '+t('Price observed {date}',{date:date(r.coin.last_updated)}):'');node.hidden=false;node.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-node.offsetWidth-8))+'px';node.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-node.offsetHeight-8))+'px';}
 function hideTooltip(){$('tileTooltip').hidden=true;}
 function renderChoosers(){
   for(const prefix of ['welcome','manage']){
@@ -229,7 +232,7 @@ function renderChoosers(){
     }
     for(const b of control.children){b.setAttribute('aria-pressed',String(b.dataset.catalog===state.catalog));b.textContent=t({all:'All assets',crypto:'Crypto',xstock:'xStocks'}[b.dataset.catalog]);}
     const note=$(prefix+'CatalogNote'),source=C.sourceState(state.snapshot,'coingecko_xstocks');
-    note.textContent=t(state.catalog==='xstock'?(source.usable?'Stocks & ETFs, tokenized':xstockCoins().length?'Older data · last available quotes shown.':'The xStocks feed is unavailable. Please try again later.'):'Crypto and xStocks, in one watchlist.');
+    note.textContent=t(state.catalog==='xstock'?(source.usable?'Delayed token quotes':xstockCoins().length?'Collection interrupted · last received quotes shown.':'The xStocks feed is unavailable. Please try again later.'):'Crypto and xStocks, in one watchlist.');
     note.classList.toggle('limited',state.catalog==='xstock'&&!source.usable);
   }
   renderChoices('welcomeResults',$('welcomeSearch').value,12,false);renderChoices('manageResults',$('manageSearch').value,manageLimit,$('selectedOnly').checked);renderSelection();
@@ -245,7 +248,7 @@ function renderChoices(target,query,limit,onlySelected){
     const identity=el('span','coin-identity');identity.append(el('b','',c.name,false),el('small','',c.symbol.toUpperCase(),false));
     if(C.isXstock(c)){const badge=el('span','asset-badge','xStock');identity.lastChild.append(badge);}
     const values=el('span','coin-values');values.append(el('span','',price(c.current_price,C.isXstock(c))),el('small',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
-    if(C.isXstock(c)&&!C.quoteState(state.snapshot,c).usable){values.lastChild.className='muted';values.lastChild.textContent=t('Older quote');}
+    if(C.isXstock(c)){const status=C.quoteState(state.snapshot,c);values.lastChild.className='muted';values.lastChild.textContent=t('Quoted {age}',{age:age(status.age)});values.title=t('Price observed {date}',{date:date(c.last_updated)});}
     row.append(coinImage(c),identity,values,icon(selected?'check':'plus'));row.setAttribute('aria-label',t(selected?'Remove {name}':'Add {name}',{name:c.name}));container.append(row);
   }
   if(!matching.length)container.append(el('p','empty-description',state.loading?'Loading assets...':!state.snapshot?'Market data is unavailable.':onlySelected?'No selected assets match.':'No matching asset in the current feed.'));
@@ -335,7 +338,11 @@ function renderAsset(){
   }
   const head=el('div','asset-price'),quote=el('div','asset-quote');quote.append(el('b','',price(c.current_price,C.isXstock(c))),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])+' · '+t(state.settings.tf.toUpperCase())));
   const fav=button('','icon-button',()=>toggleCoin(c.id));fav.id='assetFavorite';fav.title=t(state.selected.has(c.id)?'Remove from watchlist':'Add to watchlist');fav.setAttribute('aria-label',fav.title);fav.setAttribute('aria-pressed',String(state.selected.has(c.id)));fav.append(icon('star'));head.append(quote,fav);body.append(head);
-  if(xstock&&!quoteStatus.usable){quote.lastChild.className='muted';body.append(el('p','quote-warning','Older quote · this price is not current.'));}
+  if(xstock){
+    if(!quoteStatus.usable)quote.lastChild.className='muted';
+    const label=!quoteStatus.source.usable?'Collection interrupted · last received quote.':quoteStatus.age>600000?'Provider quote older than 10 min.':quoteStatus.kind==='delayed'?'Delayed quote.':quoteStatus.kind==='current'?'Last quoted price.':'Quote timestamp unavailable or invalid.';
+    body.append(el('p',quoteStatus.usable?'observation-quality':'quote-warning',t(label)+' '+t('Price observed {date}',{date:date(c.last_updated)})));
+  }
   const tabs=el('div','asset-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',t('Asset details'));
   for(const [id,label] of xstock?[['market','Token market data']]:[['signals','Signals'],['market','Market data']]){
     const tab=button(label,'',()=>selectAssetTab(id));tab.id='assetTab-'+id;tab.setAttribute('role','tab');tab.setAttribute('aria-controls','assetPane-'+id);

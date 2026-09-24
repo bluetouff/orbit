@@ -37,7 +37,10 @@ async function main(){
     assert.equal(await page.locator('html').getAttribute('lang'),'fr');assert.equal(await page.locator('#homeIntro').isVisible(),false);
     await page.locator('#homeLink').click();assert.equal(await page.locator('#homeIntro').isVisible(),true);assert.equal(await page.locator('#watchCount').textContent(),'1');
     await page.locator('#buildWatchlist').click();
-    assert.equal(await page.locator('#marketContext .breadth-bar').count(),1);
+    // Real provider data may legitimately be stale during visual QA. The
+    // deterministic fixture below separately proves the available breadth.
+    if(await page.evaluate(()=>state.analysis.market.available))assert.equal(await page.locator('#marketContext .breadth-bar').count(),1);
+    else assert.match(await page.locator('#marketContext').textContent(),/pas à jour|insuffisante/);
     for(const lang of ['fr','en']){
       await page.locator(`[data-lang="${lang}"]`).click();
       for(const [width,height]of [[1440,950],[1366,768],[390,844],[320,568]]){
@@ -70,6 +73,7 @@ async function main(){
     fixture.coins[1].id='bitcoin';for(const c of fixture.coins)c.last_updated=stamp;
     await testPage.route('**/data.json',r=>r.fulfill({json:fixture}));
     await testPage.goto(origin+'/web/');await testPage.waitForFunction(()=>state.snapshot);
+    assert.equal(await testPage.locator('#marketContext .breadth-bar').count(),1);
     await testPage.evaluate(()=>openAsset('test-0'));
     const actual=await testPage.evaluate(()=>['price','activity','divergence'].map(kind=>{const r=signalReading(byId('test-0'),kind);return {kind,value:r.value,active:r.active};}));
     const result=C.analyze(C.normalizeSnapshot(fixture),'24h').byId.get('test-0');

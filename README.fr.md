@@ -20,7 +20,7 @@ Un collecteur Python, limité à la bibliothèque standard, récupère les donn�
 
 Le navigateur contacte uniquement la même origine. Aucune clé API, police distante, publicité ou bibliothèque tierce n’est nécessaire côté client. Favoris, réglages et langue restent dans le stockage local du navigateur. Les journaux techniques du serveur sont décrits dans les [mentions de confidentialité](https://orbit.l0g.fr/legal/).
 
-CoinGecko fournit le marché crypto et la catégorie `xstocks-ecosystem`. Le flux xStocks ajoute au plus une requête toutes les 120 secondes avec le réglage par défaut, pour une page de 250 membres maximum. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
+CoinGecko fournit le marché crypto et la catégorie `xstocks-ecosystem`. Le flux xStocks ajoute au plus une requête toutes les 60 secondes avec le réglage par défaut, pour une page de 250 membres maximum. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
 
 ## Aperçu local
 
@@ -62,7 +62,13 @@ Les guides utilisateur sont dans `web/docs/index.html` et `web/docs/en/index.htm
 
 En cas de réponse HTTP 429 de CoinGecko, le collecteur diffère tous les appels
 à ce fournisseur et respecte `Retry-After`. La temporisation persiste entre
-les passages du timer ; les prix et leurs dates restent inchangés. Son fichier
-privé ne contient qu’une date de reprise et un compteur, hors du webroot et
+les passages du timer ; les prix et leurs dates de collecte réussie restent
+inchangés. Un nouvel instantané peut publier l’échec et actualiser les autres
+sources. Les appels CoinGecko sont espacés d’au moins deux secondes ; les pages
+crypto sont mises en cache 60 secondes par défaut (`ORBIT_MARKETS_REFRESH_SEC`).
+Un échec de page conserve l’univers crypto précédent au complet. Le fichier
+privé de temporisation ne contient qu’une date de reprise et un compteur, hors du webroot et
 ignorés par Git. Le [runbook](RUNBOOK.md#coingecko-http-429-recovery) précise les
 attentes bornées du déploiement et la reprise après restauration.
+
+Les xStocks sont présentés comme des cotations différées : une date de prix de 3 à 10 minutes reste visible comme telle ; au-delà de 10 minutes, ou sans date valide, la tuile devient neutre. L’état de collecte est distinct de cette date. Ce seuil d’affichage ne garantit pas une cotation en temps réel et ne modifie pas les signaux crypto.

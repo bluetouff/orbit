@@ -22,6 +22,13 @@ class RateLimitTests(unittest.TestCase):
         context = patch.object(b, 'OUT_DIR', str(self.directory))
         context.start()
         self.addCleanup(context.stop)
+        for name, value in [('_CG_LAST_REQUEST', None)]:
+            context = patch.object(b, name, value)
+            context.start()
+            self.addCleanup(context.stop)
+        context = patch.object(b.time, 'sleep')
+        context.start()
+        self.addCleanup(context.stop)
 
     def limited(self, header=None):
         return urllib.error.HTTPError('https://api.coingecko.com/api/v3/coins/markets', 429, 'Too Many Requests', {'Retry-After': header} if header is not None else {}, None)
@@ -81,18 +88,20 @@ class RateLimitTests(unittest.TestCase):
             request.assert_called_once()
         self.assertFalse(Path(b.rate_limit_path()).exists())
 
-    def test_failed_market_collection_keeps_snapshot_bytes_and_dates(self):
+    def test_failed_market_collection_publishes_failure_without_redating_quotes(self):
         snapshot = self.directory / 'orbit.json'
         original = json.dumps({'snapshot': '2020-01-01T00:00:00Z', 'coins': [coin()], 'status': {}}).encode()
         snapshot.write_bytes(original)
-        with patch.object(b, 'LOGO_DIR', str(self.directory / 'logos')), patch.object(b, 'fetch', side_effect=self.limited()) as request:
-            with self.assertRaises(b.CoinGeckoCooldown):
-                b.build()
-            self.assertEqual(snapshot.read_bytes(), original)
-            with self.assertRaises(b.CoinGeckoCooldown):
-                b.build()
+        with patch.object(b, 'LOGO_DIR', str(self.directory / 'logos')), patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=(None, {'ok': False})), patch.object(b, 'fetch', side_effect=self.limited()) as request:
+            b.build()
+            b.build()
             request.assert_called_once()
-            self.assertEqual(snapshot.read_bytes(), original)
+            data = json.loads(snapshot.read_text())
+            self.assertEqual(data['coins'][0]['last_updated'], coin()['last_updated'])
+            self.assertEqual(data['coins'][0]['current_price'], coin()['current_price'])
+            self.assertFalse(data['status']['coingecko_markets']['ok'])
+            self.assertIsNone(data['status']['coingecko_markets']['fetched_at'])
+            self.assertIn('retry_at', data['status']['coingecko_markets'])
 
     def test_category_rate_limit_preserves_original_quotes_and_blocks_global_call(self):
         old = {**coin('test-xstock'), 'asset_type': 'xstock'}
@@ -131,7 +140,7 @@ class RateLimitTests(unittest.TestCase):
             b.build()
         self.assertFalse(Path(b.rate_limit_path()).exists())
 
-    def test_service_invocations_exit_cleanly_on_cooldown_without_refetching_or_redating(self):
+    def test_service_invocations_publish_cooldown_without_refetching_or_redating(self):
         snapshot = self.directory / 'orbit.json'
         original = json.dumps({'snapshot': '2020-01-01T00:00:00Z', 'coins': [coin()]}).encode()
         snapshot.write_bytes(original)
@@ -147,11 +156,14 @@ with patch.object(urllib.request.OpenerDirector, 'open', side_effect=failure):
         for phase in ('first', 'next'):
             result = subprocess.run([sys.executable, '-c', script, builder, phase], env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('CoinGecko cooldown until', result.stderr)
+            self.assertIn('snapshot degraded', result.stderr)
             self.assertNotIn('synthetic-test-only', result.stderr)
             self.assertNotIn('https:', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
-            self.assertEqual(snapshot.read_bytes(), original)
+            data = json.loads(snapshot.read_text())
+            self.assertEqual(data['coins'][0]['last_updated'], coin()['last_updated'])
+            self.assertEqual(data['status']['coingecko_markets']['error'], 'CoinGeckoCooldown')
+            self.assertIsNone(data['status']['coingecko_markets']['fetched_at'])
 
 
 if __name__ == '__main__':
