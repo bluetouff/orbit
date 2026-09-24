@@ -145,7 +145,7 @@ class ReleaseTests(unittest.TestCase):
     def test_collection_retries_once_only_after_recorded_provider_backpressure(self):
         with patch.object(release, 'wait_for_provider') as wait, patch.object(release, 'systemctl') as ctl, patch.object(release, 'provider_retry_at', return_value=200), patch.object(release.time, 'time', return_value=100), patch.object(release, 'validate_collected', side_effect=[release.CollectionNotReady('no new snapshot'), None]):
             release.collect_for_release()
-        self.assertEqual([call.args for call in wait.call_args_list], [(60,), (0,)])
+        self.assertEqual([call.args for call in wait.call_args_list], [(60,), (180,)])
         self.assertEqual([call.args for call in ctl.call_args_list], [('start', release.SERVICE)] * 2)
 
     def test_collection_does_not_retry_service_or_schema_failure(self):

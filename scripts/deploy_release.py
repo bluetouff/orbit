@@ -213,7 +213,9 @@ def collect_for_release():
     # One collection after a quiet minute; at most one retry, only after a
     # recorded 429 cooldown. No retry for schema, auth or service failures.
     for attempt in range(2):
-        wait_for_provider(60 if attempt == 0 else 0)
+        # A failed category fetch is cached for up to 180s as well. Let that
+        # cache expire before the sole retry, even if Retry-After was shorter.
+        wait_for_provider(60 if attempt == 0 else 180)
         started = int(time.time())
         systemctl('start', SERVICE)
         try:
