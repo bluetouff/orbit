@@ -183,7 +183,7 @@ test('market context and relative comparisons do not mutate inputs or depend on 
 
 test('xStocks cannot alter crypto statistics, signals or relative comparisons',()=>{
   const original=raw(),baseline=C.analyze(C.normalizeSnapshot(original),'24h',now);
-  original.coins.push({...original.coins[0],id:'test-xstock',asset_type:'xstock',[C.TF['24h']]:99000,market_cap:1,total_volume:1e20});
+  original.coins.push({...original.coins[0],id:'test-xstock',asset_type:'xstock',price_source:'kraken',fetched_at:stamp,[C.TF['24h']]:99000,market_cap:1,total_volume:1e20});
   const mixed=C.analyze(C.normalizeSnapshot(original),'24h',now);
   assert.deepEqual(mixed.price,baseline.price);assert.deepEqual(mixed.activity,baseline.activity);assert.deepEqual(mixed.market,baseline.market);
   assert.equal(mixed.referenceCount,baseline.referenceCount);
@@ -191,30 +191,30 @@ test('xStocks cannot alter crypto statistics, signals or relative comparisons',(
   const stock=mixed.byId.get('test-xstock');assert.equal(stock.available,false);assert.equal(stock.relativeBTC.value,null);assert.deepEqual(stock.events,[]);
 });
 test('xStocks freshness is independent from crypto collection and fails closed',()=>{
-  const data=raw(1);data.coins[0]={...data.coins[0],id:'test-xstock',asset_type:'xstock',last_updated:stamp};
+  const data=raw(1);data.coins[0]={...data.coins[0],id:'test-xstock',asset_type:'xstock',price_source:'kraken',fetched_at:stamp,last_updated:stamp};
   let s=C.normalizeSnapshot(data),c=s.coins[0];assert.equal(C.quoteState(s,c,now).usable,false);
-  data.status={coingecko_xstocks:{ok:true,fetched_at:stamp,last_success_at:stamp}};
+  data.status={kraken_xstocks:{ok:true,fetched_at:stamp,last_success_at:stamp}};
   s=C.normalizeSnapshot(data);assert.equal(C.quoteState(s,s.coins[0],now).usable,true);
-  assert.equal(C.quoteState(s,s.coins[0],now+180001).usable,false);
-  data.status.coingecko_xstocks.ok=false;s=C.normalizeSnapshot(data);
+  assert.equal(C.quoteState(s,s.coins[0],now+2100001).usable,false);
+  data.status.kraken_xstocks.ok=false;s=C.normalizeSnapshot(data);
   assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
-  data.status.coingecko_xstocks.ok=true;data.coins[0].last_updated='2025-01-01T00:00:00Z';s=C.normalizeSnapshot(data);
-  assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
+  data.status.kraken_xstocks.ok=true;data.coins[0].last_updated='2025-01-01T00:00:00Z';s=C.normalizeSnapshot(data);
+  assert.equal(C.quoteState(s,s.coins[0],now).usable,true);
 });
 test('nullable token metrics remain missing and legacy xStocks stay outside crypto',()=>{
-  const data=raw(1);data.coins.push({...data.coins[0],id:'apple-xstock',market_cap:null,total_volume:null});
+  const data=raw(1);data.coins.push({...data.coins[0],id:'apple-xstock',price_source:'kraken',fetched_at:stamp,market_cap:null,total_volume:null});
   const s=C.normalizeSnapshot(data),c=s.coins[1];assert.equal(c.asset_type,'xstock');assert.equal(c.market_cap,null);assert.equal(c.total_volume,null);
   assert.equal(C.analyze(s,'24h',now).referenceCount,1);
   data.coins[1].current_price=null;assert.equal(C.normalizeSnapshot(data).coins.length,1);
 });
 
-test('delayed token quotes are explicit and never extend crypto signal eligibility',()=>{
-  const r=raw(1);r.status={coingecko_xstocks:{ok:true,fetched_at:stamp,ttl:60}};
-  r.coins[0]={...r.coins[0],id:'test-xstock',asset_type:'xstock',last_updated:new Date(now-180001).toISOString()};
+test('historical Kraken trades retain dates and never enter crypto signals',()=>{
+  const r=raw(1);r.status={kraken_xstocks:{ok:true,fetched_at:stamp,ttl:60}};
+  r.coins[0]={...r.coins[0],id:'test-xstock',asset_type:'xstock',price_source:'kraken',fetched_at:stamp,last_updated:new Date(now-180001).toISOString()};
   let s=C.normalizeSnapshot(r),q=C.quoteState(s,s.coins[0],now);
-  assert.equal(q.kind,'delayed');assert.equal(q.age,180001);assert.equal(q.usable,true);
+  assert.equal(q.kind,'historical');assert.equal(q.age,180001);assert.equal(q.usable,true);
   assert.equal(C.analyze(s,'24h',now).byId.get('test-xstock').available,false);
-  for(const [offset,kind,usable] of [[600000,'delayed',true],[600001,'stale',false],[-60001,'stale',false]]){
+  for(const [offset,kind,usable] of [[600000,'historical',true],[86400000,'historical',true],[-60001,'unknown',false]]){
     r.coins[0].last_updated=new Date(now-offset).toISOString();s=C.normalizeSnapshot(r);q=C.quoteState(s,s.coins[0],now);
     assert.equal(q.kind,kind);assert.equal(q.usable,usable);
   }
@@ -223,14 +223,23 @@ test('delayed token quotes are explicit and never extend crypto signal eligibili
 });
 
 test('token collection deadline follows bounded cadence independently from quote age',()=>{
-  const r=raw(1);r.status={coingecko_xstocks:{ok:true,fetched_at:stamp,ttl:120}};
+  const r=raw(1);r.status={kraken_xstocks:{ok:true,fetched_at:stamp,ttl:120}};
   const s=C.normalizeSnapshot(r);
-  assert.equal(C.sourceState(s,'coingecko_xstocks',now+240000).usable,true);
-  assert.equal(C.sourceState(s,'coingecko_xstocks',now+240001).usable,false);
-  s.status.coingecko_xstocks.ttl=86400;
-  assert.equal(C.sourceState(s,'coingecko_xstocks',now+300001).usable,false);
-  s.status.coingecko_xstocks.ok=false;
-  assert.equal(C.sourceState(s,'coingecko_xstocks',now).usable,false);
+  assert.equal(C.sourceState(s,'kraken_xstocks',now+2100000).usable,true);
+  assert.equal(C.sourceState(s,'kraken_xstocks',now+2100001).usable,false);
+  s.status.kraken_xstocks.ttl=86400;
+  assert.equal(C.sourceState(s,'kraken_xstocks',now+2100001).usable,false);
+  s.status.kraken_xstocks.ok=false;
+  assert.equal(C.sourceState(s,'kraken_xstocks',now).usable,false);
   // The crypto contract remains three minutes.
   assert.equal(C.sourceState(s,'coingecko_markets',now+180001).usable,false);
+});
+
+test('legacy CoinGecko tokens cannot be silently attributed to Kraken',()=>{
+  const r=raw(1);r.coins.push({...r.coins[0],id:'apple-xstock',asset_type:'xstock'});
+  assert.equal(C.normalizeSnapshot(r).coins.length,1);
+  r.coins[1].price_source='kraken';r.coins[1].fetched_at=stamp;
+  const token=C.normalizeSnapshot(r).coins[1];
+  for(const key of ['market_cap','total_volume','ath','circulating_supply',...Object.values(C.TF)])assert.equal(token[key],null);
+  assert.deepEqual(token.spark,[]);
 });

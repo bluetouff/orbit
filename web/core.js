@@ -17,7 +17,7 @@
   }
   function time(v) { const n = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v) ? Date.parse(v) : NaN; return Number.isFinite(n) ? n : null; }
   const isXstock = c => c?.asset_type==='xstock'||/xstocks?$/i.test(c?.id||'')||/\bxstocks?\b/i.test(c?.name||'');
-  const assetSource = c => isXstock(c)?'coingecko_xstocks':'coingecko_markets';
+  const assetSource = c => isXstock(c)?'kraken_xstocks':'coingecko_markets';
   function normalizeSnapshot(d) {
     if (!d || !Array.isArray(d.coins)) throw new Error('Invalid snapshot');
     const ids = new Set(), coins = [];
@@ -26,21 +26,25 @@
       const id=text(c.id,80), symbol=text(c.symbol,20), name=text(c.name);
       if (!ID.test(id) || !/^[a-z0-9][a-z0-9._-]{0,19}$/i.test(symbol) || !name || ids.has(id)) continue;
       if(c.asset_type!=null&&!['crypto','xstock'].includes(c.asset_type)) continue;
+      if(isXstock(c)&&c.price_source!=='kraken') continue;
       const o={id,symbol,name,has_logo:c.has_logo!==false,asset_type:isXstock(c)?'xstock':'crypto'};
       for (const k of ['current_price','market_cap','total_volume','ath','circulating_supply']) o[k]=num(c[k],0);
       if (o.current_price===null||(!isXstock(o)&&['market_cap','total_volume'].some(k=>o[k]===null))) continue;
+      o.price_source=isXstock(o)?'kraken':'coingecko';
+      o.fetched_at=time(c.fetched_at)!==null?c.fetched_at:null;
       o.market_cap_rank=num(c.market_cap_rank,1,1000000);
       for (const k of Object.values(TF)) o[k]=num(c[k],-100,100000);
       for (const k of ['galaxy_score','sentiment','social_dominance']) o[k]=num(c[k],0,100);
       o.social_source=text(c.social_source,40);
+      if(isXstock(o)){for(const k of [...Object.values(TF),'market_cap','total_volume','ath','circulating_supply','galaxy_score','sentiment','social_dominance'])o[k]=null;}
       o.last_updated=time(c.last_updated)!==null?text(c.last_updated,40):null;
       o.observationInvalid=c.last_updated!=null&&o.last_updated===null;
-      o.spark=Array.isArray(c.spark)?c.spark.slice(0,240).map(v=>num(v,0)).filter(v=>v!==null):[];
+      o.spark=!isXstock(o)&&Array.isArray(c.spark)?c.spark.slice(0,240).map(v=>num(v,0)).filter(v=>v!==null):[];
       ids.add(id);coins.push(o);
     }
     if (!coins.length) throw new Error('No valid market data');
     const status={};
-    for (const key of ['coingecko_markets','coingecko_xstocks','coingecko_global','lunarcrush','fred']) {
+    for (const key of ['coingecko_markets','kraken_xstocks','coingecko_global','lunarcrush','fred']) {
       const s=d.status?.[key];
       if (!s || typeof s!=='object') continue;
       status[key]={ok:s.ok===true,enabled:s.enabled!==false,reused:s.reused===true,
@@ -63,9 +67,9 @@
     const s=snapshot?.status?.[key];
     const stamp=s?.last_success_at || (s?.ok===false?null:s?.fetched_at) || (key==='coingecko_markets'&&!s?snapshot?.snapshot:null);
     const ms=time(stamp), age=ms===null?null:now-ms;
-    // The xStocks fetch interval plus two minutes for timer, transport and page
-    // polling. Quote timestamps are assessed separately, never reset by fetches.
-    const ttl={coingecko_markets:180,coingecko_xstocks:Math.min(180,Math.max(60,s?.ttl||60))+120,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
+    // Kraken runs independently every 30 minutes. Trade dates are separate.
+    // Crypto retains its strict three-minute freshness boundary.
+    const ttl={coingecko_markets:180,kraken_xstocks:2100,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
     let kind='current';
     if (s?.enabled===false) kind='disabled';
     else if (s?.ok===false) kind='unavailable';
@@ -89,10 +93,12 @@
   function quoteState(snapshot,c,now=Date.now()) {
     const source=sourceState(snapshot,assetSource(c),now),observed=observation(c,now);
     const stamp=time(c.last_updated),age=stamp===null?null:now-stamp;
-    // Token quotes are a delayed market view, never a crypto signal input.
-    // Keep the delay visible; after ten minutes even the map colors are disabled.
-    const kind=isXstock(c)&&observed==='stale'&&age>=0&&age<=600000?'delayed':observed;
-    return {source,observed,kind,age,usable:source.usable&&(isXstock(c)?['current','delayed'].includes(kind):['current','unknown'].includes(observed))};
+    if(isXstock(c)){
+      const checked=time(c.fetched_at),checkedAge=checked===null?null:now-checked;
+      const valid=age!==null&&age>=-60000&&checkedAge!==null&&checkedAge>=-60000&&checkedAge<=2400000&&stamp<=checked+60000;
+      return {source,observed,kind:valid?'historical':'unknown',age,usable:source.usable&&valid};
+    }
+    return {source,observed,kind:observed,age,usable:source.usable&&['current','unknown'].includes(observed)};
   }
   function relativeBitcoin(c,btc,key,current,now) {
     const result={value:null,reason:null,dated:false};

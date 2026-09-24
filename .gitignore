@@ -19,3 +19,5 @@ web/data.json
 web/orbit.json
 web/logos/
 .coingecko-rate-limit.json
+.kraken-xstocks.json
+.kraken-xstocks.lock

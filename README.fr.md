@@ -7,20 +7,22 @@ Favoris et carte de marché crypto et xStocks, par l0g Lab. Logiciel sous [licen
 ## Utilisation
 
 - Jusqu’à 50 favoris mêlant cryptos et xStocks, conservés sur votre appareil.
-- Vues Crypto (jusqu’à 100 actifs) et xStocks (jusqu’à 50), catalogue consultable par nom ou symbole.
-- Variations sur 1H, 24H, 7D et 30D ; taille des tuiles selon la performance, la capitalisation ou le volume.
+- Vues Crypto (jusqu’à 100 actifs) et xStocks (tous les tokens USD collectés sur Kraken), catalogue consultable par nom ou symbole.
+- Pour les cryptos : variations sur 1H, 24H, 7D et 30D ; taille des tuiles selon la performance, la capitalisation ou le volume.
 - Fiches de marché, dates des sources et états explicites lorsque les données sont anciennes ou indisponibles.
 - Interface FR/EN, navigation au clavier, import et export JSON locaux.
 
-Les xStocks sont suivis comme des tokens. Leurs prix, volumes et capitalisations ne sont pas ceux des titres sous-jacents. Ils sont exclus des statistiques et signaux crypto. La [documentation de l’émetteur](https://docs.xstocks.fi/docs/frequently-asked-questions) précise leur nature de certificats et l’absence de droits de vote d’actionnaire. Orbit ne passe aucun ordre et ne connecte aucun portefeuille.
+Les xStocks sont suivis comme des tokens. La vue présente leur dernier prix échangé sur Kraken et sa date, sans le confondre avec le cours du titre sous-jacent. Les variations par période, volumes et capitalisations ne sont pas fournis dans cette vue. Ils sont exclus des statistiques et signaux crypto. La [documentation de l’émetteur](https://docs.xstocks.fi/docs/frequently-asked-questions) précise leur nature de certificats et l’absence de droits de vote d’actionnaire. Orbit ne passe aucun ordre et ne connecte aucun portefeuille.
 
 ## Architecture et confidentialité
 
-Un collecteur Python, limité à la bibliothèque standard, récupère les données côté serveur. Un timer systemd déclenche les collectes ; Apache sert un instantané JSON commun et des logos locaux. Les visiteurs ne multiplient pas les appels aux fournisseurs.
+Deux collecteurs Python, limités à la bibliothèque standard, récupèrent les données côté serveur. Des timers systemd indépendants déclenchent les collectes ; Apache sert un instantané JSON commun et des logos locaux. Les visiteurs ne multiplient pas les appels aux fournisseurs.
 
 Le navigateur contacte uniquement la même origine. Aucune clé API, police distante, publicité ou bibliothèque tierce n’est nécessaire côté client. Favoris, réglages et langue restent dans le stockage local du navigateur. Les journaux techniques du serveur sont décrits dans les [mentions de confidentialité](https://orbit.l0g.fr/legal/).
 
-CoinGecko fournit le marché crypto et la catégorie `xstocks-ecosystem`. Le flux xStocks ajoute au plus une requête toutes les 60 secondes avec le réglage par défaut, pour une page de 250 membres maximum. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
+CoinGecko conserve la collecte crypto actuelle, avec un cache minimal de 60 secondes. Les xStocks passent par l’[API publique Kraken](https://docs.kraken.com/api-reference/market-data/get-recent-trades), sans clé et sans crédit CoinGecko. Leur collecteur indépendant passe toutes les 30 minutes, à moins d’une requête par seconde. Un cycle prend quelques minutes et ne bloque pas les cryptos. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
+
+Le catalogue xStocks contient les marchés de tokens en USD ayant au moins un échange, dans une limite de 250. Les favoris existants sont conservés lorsque le symbole correspond de façon unique. Le cache privé Kraken reste hors de la racine web ; le navigateur lit uniquement les données publiques validées.
 
 ## Aperçu local
 
@@ -71,4 +73,8 @@ privé de temporisation ne contient qu’une date de reprise et un compteur, hor
 ignorés par Git. Le [runbook](RUNBOOK.md#coingecko-http-429-recovery) précise les
 attentes bornées du déploiement et la reprise après restauration.
 
-Les xStocks sont présentés comme des cotations différées : une date de prix de 3 à 10 minutes reste visible comme telle ; au-delà de 10 minutes, ou sans date valide, la tuile devient neutre. L’état de collecte est distinct de cette date. Ce seuil d’affichage ne garantit pas une cotation en temps réel et ne modifie pas les signaux crypto.
+Les pages crypto sont publiées atomiquement dès leur collecte complète, avant les requêtes sociales, macro et les logos. Une seconde publication complète le contexte sans changer les dates des prix ni de la collecte crypto.
+
+Les xStocks affichent la date réelle du dernier échange. Un échange ancien peut refléter un marché peu actif, même si sa collecte vient de réussir. Une collecte vieille de plus de 35 minutes ou un contrôle individuel vieux de plus de 40 minutes est signalé comme indisponible. Les dates des prix restent intactes. En cas de panne, seuls les derniers prix Kraken déjà reçus peuvent être conservés, avec un état explicite.
+
+Le déploiement installe `orbit-xstocks.service` et son timer indépendant, sans modifier le timer crypto ni le fichier de secrets. Il précharge Kraken pendant que les cryptos continuent de tourner, puis valide la nouvelle collecte avant de publier le front. Le retour arrière inclut les unités Kraken. La vérification prolongée `python3 scripts/verify_collection.py --kraken-renewal` contrôle deux renouvellements crypto et un renouvellement Kraken, en lisant seulement le site public.

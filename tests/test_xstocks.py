@@ -8,61 +8,35 @@ from test_builder import b, v, coin
 
 
 class XstocksTests(unittest.TestCase):
-    def test_category_is_bounded_and_duplicates_and_invalid_data_are_removed(self):
-        rows = [coin("test-xstock"), coin("test-xstock"), {**coin("../invalid"), "image": "https://evil.invalid/"}, None]
-        with patch.object(b, "cg", return_value=rows) as request:
-            coins, logos, status = b.get_xstocks({})
-        self.assertEqual(len(coins), 1)
-        self.assertEqual(coins[0]["asset_type"], "xstock")
-        self.assertTrue(status["ok"])
-        self.assertEqual(status["invalid"], 3)
-        self.assertEqual(request.call_args.args[1]["category"], "xstocks-ecosystem")
-        self.assertEqual(request.call_args.args[1]["per_page"], 250)
-        self.assertEqual(status["fetched_at"], status["last_success_at"])
+    def test_reads_only_kraken_cache_without_any_network_or_old_coingecko_fallback(self):
+        raw = {**coin('apple-xstock'), 'asset_type': 'xstock', 'price_source': 'kraken', 'market_pair': 'AAPLxUSD', 'fetched_at': b.utc_now(), 'market_cap': None, 'total_volume': None}
+        with tempfile.TemporaryDirectory() as directory, patch.object(b, 'OUT_DIR', directory), patch.object(b, 'cg') as cg, patch.object(b, 'fetch') as fetch:
+            coins, _, status = b.get_xstocks({'coins': [{**raw, 'price_source': 'coingecko'}]})
+            self.assertEqual(coins, []); self.assertFalse(status['ok'])
+            cache = Path(directory) / '.kraken-xstocks.json'
+            cache.write_text(json.dumps({'coins': [raw], 'status': {'ok': True, 'fetched_at': b.utc_now()}}))
+            coins, _, status = b.get_xstocks({})
+            self.assertEqual(len(coins), 1); self.assertEqual(coins[0]['price_source'], 'kraken')
+            self.assertTrue(status['ok']); self.assertIsNone(coins[0]['market_cap'])
+            cg.assert_not_called(); fetch.assert_not_called()
+            cache.write_text(json.dumps({'coins': [{**raw, 'last_updated': 'invalid'}], 'status': {'ok': True}}))
+            self.assertFalse(b.get_xstocks({})[2]['ok'])
 
-    def test_cache_keeps_observation_and_collection_time_without_requests(self):
-        stamp = b.utc_now()
-        old = {**coin("test-xstock"), "asset_type": "xstock"}
-        previous = {"coins": [old], "status": {"coingecko_xstocks": {"ok": True, "fetched_at": stamp, "last_success_at": stamp}}}
-        with patch.object(b, "cg") as request:
-            coins, logos, status = b.get_xstocks(previous)
-        request.assert_not_called()
-        self.assertEqual(coins, [old])
-        self.assertEqual(logos, [])
-        self.assertEqual(status["last_success_at"], stamp)
-        self.assertEqual(coins[0]["last_updated"], old["last_updated"])
-
-    def test_failure_keeps_real_old_quotes_and_never_exposes_error_text(self):
-        old = {**coin("test-xstock"), "asset_type": "xstock"}
-        previous = {"coins": [old], "status": {"coingecko_xstocks": {"ok": True, "fetched_at": "2026-01-01T00:00:00Z"}}}
-        with patch.object(b, "cg", side_effect=ValueError("synthetic-secret-do-not-expose")):
-            coins, _, status = b.get_xstocks(previous)
-        self.assertEqual(coins, [old])
-        self.assertFalse(status["ok"])
-        self.assertEqual(status["last_success_at"], "2026-01-01T00:00:00Z")
-        self.assertNotIn("synthetic-secret", json.dumps(status))
-        with patch.object(b, "cg") as request:
-            _, _, retry = b.get_xstocks({"coins": coins, "status": {"coingecko_xstocks": status}})
-        request.assert_not_called()
-        self.assertFalse(retry["ok"])
-
-    def test_invalid_payloads_fail_closed(self):
-        for response in [None, {}, {"error": "bad"}, [], [coin()] * 251, [None], [{**coin(), "current_price": None}]]:
-            with self.subTest(response=type(response).__name__), patch.object(b, "cg", return_value=response):
-                coins, _, status = b.get_xstocks({})
-                self.assertEqual(coins, [])
-                self.assertFalse(status["ok"])
-
-    def test_unknown_cap_and_volume_are_null_and_social_is_not_matched(self):
-        raw = {**coin("test-xstock"), "asset_type": "xstock", "market_cap": None, "total_volume": None}
-        normalized = b.normalize_coin(raw, {"TST": {"galaxy_score": 95}}, True)
-        self.assertIsNone(normalized["market_cap"])
-        self.assertIsNone(normalized["total_volume"])
-        self.assertNotIn("galaxy_score", normalized)
+    def test_kraken_cache_cannot_leak_crypto_metrics_or_invalid_trade_dates(self):
+        raw = {**coin('apple-xstock', 'aaplx'), 'asset_type': 'xstock', 'price_source': 'kraken', 'market_pair': 'AAPLxUSD', 'fetched_at': b.utc_now(), 'market_cap': 100, 'total_volume': 10, 'ath': 500}
+        normalized = b.normalize_coin(raw, {}, True)
+        self.assertIsNone(normalized['market_cap']); self.assertIsNone(normalized['total_volume'])
+        self.assertNotIn('ath', normalized); self.assertNotIn('spark', normalized)
+        for change in ({'current_price': 0}, {'last_updated': '2099-01-01T00:00:00Z'}, {'fetched_at': 'bad'}):
+            self.assertIsNone(b.normalize_coin({**raw, **change}, {}, False))
         with tempfile.TemporaryDirectory() as directory:
-            file = Path(directory) / "snapshot.json"
-            file.write_text(json.dumps({"snapshot": b.utc_now(), "count": 1, "coins": [normalized]}))
-            self.assertEqual(v.main(file), 0)
+            snapshot = Path(directory) / 'orbit.json'
+            def validate(c):
+                snapshot.write_text(json.dumps({'snapshot': b.utc_now(), 'count': 1, 'coins': [c]}))
+                return v.main(str(snapshot))
+            self.assertEqual(validate(normalized), 0)
+            for change in ({'market_cap': 5}, {'price_change_percentage_24h_in_currency': 2}, {'fetched_at': None}, {'market_pair': '../invalid'}, {'current_price': 0}):
+                self.assertEqual(validate({**normalized, **change}), 1)
 
     def test_identity_is_not_truncated_and_logo_requests_stay_allowlisted(self):
         for cid in ["../secret", "bad\n", "x" * 81, ["test"], "test/../key"]:
@@ -86,7 +60,7 @@ class XstocksTests(unittest.TestCase):
     def test_coingecko_keys_use_headers_and_never_query_strings(self):
         for tier in ("demo", "pro"):
             with patch.object(b, "CG_TIER", tier), patch.object(b, "CG_KEY", "synthetic-test-only"), patch.object(b, "fetch", return_value=[]) as request:
-                b.cg("coins/markets", {"category": "xstocks-ecosystem"})
+                b.cg("coins/markets", {"page": 1})
             self.assertNotIn("synthetic-test-only", request.call_args.args[0])
             self.assertEqual(request.call_args.kwargs["headers"], {f"x-cg-{tier}-api-key": "synthetic-test-only"})
 

@@ -60,6 +60,7 @@
         <div id="mapMessage" class="map-message" role="status"><img src="orbit.svg" width="66" height="66" alt=""><h3 id="mapMessageTitle">Loading market data</h3><p id="mapMessageBody"></p><button id="resetFilter" class="secondary" hidden>Show all assets</button></div>
         <div id="tileTooltip" role="tooltip" hidden></div>
       </div>
+      <div id="xstockQuotes" class="xstock-quotes" aria-label="xStocks on Kraken" hidden></div>
       <div class="map-footer"><span id="periodCaption">24-hour performance</span><span class="legend"><span>Down</span><i></i><span>Up</span></span></div>
     </section>
     <aside id="signalsPanel" class="signals-panel" aria-labelledby="signalsTitle">
@@ -76,7 +77,7 @@
       <details><summary>How current are the data?</summary><p>The browser checks for a new server snapshot every 30 to 45 seconds while the page is visible. Provider observations can be older. Collection times are shown, and signals are paused when market data exceeds three minutes.</p></details>
       <details><summary>Where are my favorites stored?</summary><p>On this device, in your browser. Up to 50 assets, without an account. Your selection is not sent to the server. A local JSON export is available for backup or transfer.</p></details>
       <details><summary>Where do the data come from?</summary><p>CoinGecko supplies market data. LunarCrush provides separate social context when available; it does not determine the signals. FRED supplies macroeconomic context. Missing data stays unavailable.</p></details>
-      <details><summary>What are xStocks?</summary><p>xStocks are tokenized tracker certificates providing economic exposure to stocks or ETFs, without shareholder voting rights. Orbit shows the token market price, volume and capitalization, which are distinct from those of the underlying security. Trading liquidity and opening hours depend on the venue.</p><p><a href="https://docs.xstocks.fi/docs/frequently-asked-questions" target="_blank" rel="noopener noreferrer">xStocks documentation</a></p></details>
+      <details><summary>What are xStocks?</summary><p>xStocks are tokenized tracker certificates providing economic exposure to stocks or ETFs, without shareholder voting rights. Orbit shows the last token trade price on Kraken and its original date. This view does not provide period returns, volume or capitalization, and never substitutes the underlying stock price. Trading liquidity and opening hours depend on the venue.</p><p><a href="https://docs.xstocks.fi/docs/frequently-asked-questions" target="_blank" rel="noopener noreferrer">xStocks documentation</a></p></details>
       <details><summary>Is this investment advice?</summary><p>No. These are cross-asset statistical comparisons, not forecasts, trading instructions or risk guarantees. No detected signal does not mean an asset is safe.</p></details>
       <div class="faq-links"><a data-docs="" href="docs/en/">Documentation</a><a href="https://l0g.fr/">Discover l0g</a><a data-support href="https://l0g.fr/en/support/">Support independent work</a><a href="legal/">Legal &amp; privacy</a></div>
     </section>

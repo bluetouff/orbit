@@ -12,7 +12,6 @@ for logos, per-response size cap, timeouts, atomic writes.
 """
 import calendar, datetime, json, math, os, re, ssl, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter
-from itertools import zip_longest
 from email.utils import parsedate_to_datetime
 import tempfile
 
@@ -44,8 +43,8 @@ GLOBAL_REFRESH_SEC = env_int("ORBIT_GLOBAL_REFRESH_SEC", 120, 30, 3600)
 MARKETS_REFRESH_SEC = env_int("ORBIT_MARKETS_REFRESH_SEC", 60, 60, 180)
 SOCIAL_REFRESH_SEC = env_int("ORBIT_SOCIAL_REFRESH_SEC", 900, 60, 86400)
 MACRO_REFRESH_SEC  = env_int("ORBIT_MACRO_REFRESH_SEC", 3600, 300, 86400)
-XSTOCKS_REFRESH_SEC = env_int("ORBIT_XSTOCKS_REFRESH_SEC", 60, 60, 180)
-XSTOCKS_MAX = 250  # One bounded category request, independent of visitor traffic.
+XSTOCKS_REFRESH_SEC = 1800  # Independent public Kraken timer; never CoinGecko.
+XSTOCKS_MAX = 250
 TIMEOUT    = env_float("ORBIT_TIMEOUT", 20, 2, 60)
 MAX_BYTES  = env_int("ORBIT_MAX_BYTES", 40 * 1024 * 1024, 1024 * 1024, 80 * 1024 * 1024)
 
@@ -223,7 +222,7 @@ def cg(path, params):
     state = read_rate_limit()
     if state['retry_at'] > time.time():
         raise CoinGeckoCooldown(state['retry_at'])
-    # Page, category and global calls used to arrive in the same burst.
+    # Page and global calls used to arrive in the same burst.
     # This never retries a request and does not bypass the shared 429 deadline.
     if _CG_LAST_REQUEST is not None:
         time.sleep(max(0, 2 - (time.monotonic() - _CG_LAST_REQUEST)))
@@ -305,6 +304,20 @@ def normalize_coin(c, social_by_symbol, include_spark):
             pass
     if observed is not None and "last_updated" not in o:
         return None  # Never turn a malformed observation into an undated quote.
+    if kind == 'xstock' and c.get('price_source') == 'kraken':
+        pair = c.get('market_pair')
+        checked = c.get('fetched_at')
+        if not isinstance(pair, str) or not re.fullmatch(r'[A-Z0-9.]{1,18}xUSD', pair) or not parse_ts(checked):
+            return None
+        o.update(price_source='kraken', market_pair=pair, fetched_at=checked)
+        price = finite_num(c.get('current_price'), lo=0)
+        observed_time = datetime.datetime.fromisoformat(o['last_updated']).timestamp() if 'last_updated' in o else 0
+        checked_time = parse_ts(checked)
+        if not price or observed_time <= 0 or observed_time > checked_time + 60:
+            return None
+        # Kraken trades do not carry compatible returns, caps or volumes.
+        o.update(current_price=price, market_cap=None, total_volume=None)
+        return o
     required = ("current_price", "market_cap", "total_volume")
     for k in required:
         n = finite_num(c.get(k), lo=0)
@@ -354,31 +367,32 @@ def get_markets():
 
 
 def get_xstocks(previous):
-    """A separate, bounded feed. Reuse real observations without redating them."""
-    old_status = (previous.get("status") or {}).get("coingecko_xstocks") or {}
-    old_coins = [c for c in previous.get("coins", []) if isinstance(c, dict) and c.get("asset_type") == "xstock"][:XSTOCKS_MAX]
-    if not status_due(previous, "coingecko_xstocks", XSTOCKS_REFRESH_SEC):
-        return old_coins, [], mark_reused(old_status, XSTOCKS_REFRESH_SEC)
+    """Read the independent Kraken cache; this never makes a network request."""
+    old_status = (previous.get('status') or {}).get('kraken_xstocks') or {}
+    old_coins = [c for c in previous.get('coins', []) if isinstance(c, dict)
+                 and c.get('asset_type') == 'xstock' and c.get('price_source') == 'kraken'][:XSTOCKS_MAX]
     try:
-        rows = cg("coins/markets", {"vs_currency": "usd", "category": "xstocks-ecosystem",
-            "order": "market_cap_desc", "per_page": XSTOCKS_MAX, "page": 1,
-            "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
-        if not isinstance(rows, list) or not rows or len(rows) > XSTOCKS_MAX:
-            raise ValueError("invalid xStocks response")
+        fd = os.open(os.path.join(OUT_DIR, '.kraken-xstocks.json'), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError('Kraken cache too large')
+        data = json.loads(raw)
+        rows, status = data['coins'], data['status']
+        if not isinstance(rows, list) or not 1 <= len(rows) <= XSTOCKS_MAX or not isinstance(status, dict):
+            raise ValueError('Invalid Kraken cache')
         coins, seen = [], set()
         for row in rows:
-            coin = normalize_coin({**row, "asset_type": "xstock"}, {}, True) if isinstance(row, dict) else None
-            if coin and coin["id"] not in seen:
-                coins.append(coin)
-                seen.add(coin["id"])
-        if not coins:
-            raise ValueError("no valid xStocks")
-        stamp = utc_now()
-        return coins, [r for r in rows if isinstance(r, dict) and r.get("id") in seen], {
-            "ok": True, "fetched_at": stamp, "last_success_at": stamp, "ttl": XSTOCKS_REFRESH_SEC,
-            "valid": len(coins), "invalid": len(rows) - len(coins), "capped": len(rows) == XSTOCKS_MAX}
+            c = normalize_coin(row, {}, False)
+            if not c or c.get('price_source') != 'kraken' or c['asset_type'] != 'xstock' or c['id'] in seen or 'last_updated' not in c:
+                raise ValueError('Invalid Kraken quote')
+            seen.add(c['id'])
+            coins.append(c)
+        # Only fields owned by this source can cross into the public snapshot.
+        clean = {key: status[key] for key in ('ok', 'attempted_at', 'fetched_at', 'last_success_at', 'error', 'retry_at', 'valid', 'markets', 'untraded') if key in status}
+        clean['ttl'] = XSTOCKS_REFRESH_SEC
+        return coins, [], clean
     except Exception as error:
-        # Class only: never publish URLs, credentials or upstream response bodies.
         return old_coins, [], failed_status(old_status, error, XSTOCKS_REFRESH_SEC, old_coins)
 
 
@@ -453,6 +467,46 @@ def cache_logo(coin):
         return False
 
 
+def publish_snapshot(snapshot):
+    """Readers see either complete snapshot; provider dates are never rewritten."""
+    tmp = os.path.join(OUT_DIR, "orbit.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(snapshot, f, separators=(",", ":"))
+    os.replace(tmp, os.path.join(OUT_DIR, "orbit.json"))
+    os.chmod(os.path.join(OUT_DIR, "orbit.json"), 0o644)
+
+
+def publish_crypto_first(markets, status, previous):
+    """Make complete crypto pages available before optional network work."""
+    old_stocks = [c for c in previous.get('coins', [])
+                  if isinstance(c, dict) and c.get('asset_type') == 'xstock' and c.get('price_source') == 'kraken']
+    excluded = {c['id'] for c in old_stocks}
+    social = previous_social(previous)
+    symbols = Counter((c.get('symbol') or '').upper() for c in markets if isinstance(c, dict))
+    social = {symbol: value for symbol, value in social.items() if symbols[symbol] == 1}
+    coins, seen = [], set()
+    for i, row in enumerate(markets):
+        c = normalize_coin(row, social, i < SPARK_TOP)
+        if not c or c['id'] in seen or c['id'] in excluded or c['asset_type'] != 'crypto':
+            continue
+        if re.search(r'xstocks?$', c['id'], re.I) or re.search(r'\bxstocks?\b', c['name'], re.I):
+            continue
+        c['has_logo'] = os.path.exists(os.path.join(LOGO_DIR, c['id'] + '.png'))
+        seen.add(c['id'])
+        coins.append(c)
+    if not coins:
+        return
+    status.update(raw=len(markets), valid=len(coins), invalid=len(markets)-len(coins))
+    coins.extend(old_stocks)
+    prior_status = previous.get('status') or {}
+    source_status = {key: dict(prior_status.get(key) or {'ok': False})
+                     for key in ('kraken_xstocks', 'coingecko_global', 'lunarcrush', 'fred')}
+    source_status['coingecko_markets'] = dict(status)
+    publish_snapshot({'snapshot': utc_now(), 'count': len(coins), 'coins': coins,
+                      'status': source_status, 'global': previous.get('global'),
+                      'macro': previous.get('macro'), 'social_enabled': bool(LUNAR_KEY)})
+
+
 def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(LOGO_DIR, exist_ok=True)
@@ -474,12 +528,15 @@ def build():
             retained_crypto = old_crypto
             markets_status = failed_status(prev_status.get('coingecko_markets') or {}, error, MARKETS_REFRESH_SEC, retained_crypto)
 
+    if markets and markets_status.get('ok'):
+        publish_crypto_first(markets, markets_status, previous)
+
     # A crypto failure must not prevent the independent xStocks/social/macro
     # jobs. CoinGecko's shared cooldown still blocks every CoinGecko request.
-    xstocks, xstock_logos, xstocks_status = get_xstocks(previous)
+    xstocks, _, xstocks_status = get_xstocks(previous)
     xstock_ids = {c["id"] for c in xstocks}
-    # Category membership is authoritative. Exclude recognizable xStocks from
-    # the crypto feed even if category discovery is temporarily unavailable.
+    # Exclude known Kraken tokens and recognizable legacy xStocks from
+    # the crypto feed even if the independent Kraken cache is unavailable.
     markets = [{**c, "asset_type": "crypto"} for c in markets if isinstance(c, dict)
                and c.get("id") not in xstock_ids
                and not re.search(r"xstocks?$", str(c.get("id", "")), re.I)
@@ -547,7 +604,7 @@ def build():
         sys.exit(1)
 
     logo_fetches, logo_attempts = 0, 0
-    logo_candidates = [c for pair in zip_longest(xstock_logos, markets[:LOGO_MAX]) for c in pair if c is not None]
+    logo_candidates = markets[:LOGO_MAX]
     for c in logo_candidates:
         if logo_attempts >= LOGO_FETCH_PER_RUN:
             break
@@ -561,7 +618,7 @@ def build():
         c["has_logo"] = os.path.exists(os.path.join(LOGO_DIR, c["id"] + ".png"))
 
     # Reset only after all CoinGecko feeds recovered, never between market pages.
-    if crypto_count and markets_status.get('ok') and xstocks_status.get('ok') and global_status.get('ok') and not global_status.get('error') and read_rate_limit()['retry_at'] <= time.time():
+    if crypto_count and markets_status.get('ok') and global_status.get('ok') and not global_status.get('error') and read_rate_limit()['retry_at'] <= time.time():
         try:
             os.unlink(rate_limit_path())
         except FileNotFoundError:
@@ -574,7 +631,7 @@ def build():
         "social_enabled": bool(LUNAR_KEY),
         "status": {
             "coingecko_markets": markets_status,
-            "coingecko_xstocks": xstocks_status,
+            "kraken_xstocks": xstocks_status,
             "coingecko_global": global_status,
             "lunarcrush": social_status,
             "fred": macro_status,
@@ -582,11 +639,7 @@ def build():
         },
         "coins": coins,
     }
-    tmp = os.path.join(OUT_DIR, "orbit.json.tmp")
-    with open(tmp, "w") as f:
-        json.dump(snapshot, f, separators=(",", ":"))
-    os.replace(tmp, os.path.join(OUT_DIR, "orbit.json"))
-    os.chmod(os.path.join(OUT_DIR, "orbit.json"), 0o644)
+    publish_snapshot(snapshot)
     health = 'ok' if markets_status.get('ok') and xstocks_status.get('ok') else 'degraded'
     sys.stderr.write(f"snapshot {health}: {len(coins)} coins, crypto={markets_status.get('error', 'ok')}, xstocks={xstocks_status.get('error', 'ok')}, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
 

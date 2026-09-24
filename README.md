@@ -6,7 +6,7 @@ Orbit2 is a l0g Lab watchlist and heatmap for crypto assets and xStocks.
 Source: [bluetouff/orbit](https://github.com/bluetouff/orbit).
 The project is released under the [MIT License](LICENSE).
 
-Privacy-first crypto and xStocks heatmap, aligned with the other l0g dashboards
+Privacy-first crypto heatmap and xStocks price list, aligned with the other l0g dashboards
 (yct/us/euro/energy): a static subdomain served by Apache and fed by a Python
 builder running under a systemd timer. **No third-party call from the browser,
 no client-side secret, self-hosted logos.**
@@ -42,8 +42,9 @@ RUNBOOK.md                   detailed deployment procedure
 
 ## Short Version
 
-1. `build_snapshot.py` collects each feed independently. Crypto and xStocks
-   have a 60-second default cache; global, LunarCrush and FRED have longer caches. It downloads
+1. `build_snapshot.py` collects crypto with a 60-second default cache.
+   `collect_xstocks.py` collects public Kraken trades on a separate 30-minute
+   timer; global, LunarCrush and FRED have longer caches. It downloads
    missing logos in bounded batches and atomically writes `orbit.json` into
    `/var/lib/orbit`.
 2. Apache serves `web/` as static files and exposes `/data.json` + `/logos/` as
@@ -54,7 +55,7 @@ RUNBOOK.md                   detailed deployment procedure
    static snapshot, not the CoinGecko/LunarCrush/FRED APIs.
 
 The snapshot also exposes `status` so the app can distinguish what was really
-fed by providers: CoinGecko markets, CoinGecko xStocks, CoinGecko global, LunarCrush, FRED and logo
+fed by providers: CoinGecko markets, Kraken xStocks, CoinGecko global, LunarCrush, FRED and logo
 warmup.
 
 Step-by-step deployment: see **RUNBOOK.md**.
@@ -81,65 +82,64 @@ the provider. Optional credentials must be supplied through your environment.
 ```bash
 git clone https://github.com/bluetouff/orbit.git ORBIT2
 cd ORBIT2
-ORBIT_OUT_DIR="$PWD/web" ORBIT_LOGO_DIR="$PWD/web/logos" python3 build_snapshot.py
-ln -sf orbit.json web/data.json
+mkdir -p /tmp/orbit-preview
+ORBIT_OUT_DIR=/tmp/orbit-preview python3 collect_xstocks.py
+ORBIT_OUT_DIR=/tmp/orbit-preview python3 build_snapshot.py
 ```
 
-`index.html` loads `app.css`, `app.js` and `data.json` through relative paths, so
-the files must be served together. Run a small static server from the repository
-root:
+Serve this real snapshot through the loopback-only preview, keeping private
+collector caches outside the web root:
 
 ```bash
-python3 -m http.server 8765 --bind 127.0.0.1 --directory web
+python3 scripts/preview.py --port 8767 --snapshot /tmp/orbit-preview/orbit.json --logos /tmp/orbit-preview/logos
 ```
 
-Then open:
-
-```text
-http://127.0.0.1:8765/
-```
-
-Opening `index.html` directly is expected to fail with the strict CSP and
-external asset files.
+Open <http://127.0.0.1:8767/web/>. Opening `index.html` directly is unsupported.
 
 If no snapshot is available, the app displays an unavailable state and retries.
 It does not substitute invented prices. Generated snapshots and logos are
 ignored by Git.
 
+Crypto pages are published atomically as soon as the complete crypto collection
+is ready, before social, macro and logo requests. A second publication
+adds that context without changing the crypto collection or price timestamps.
+
 ## xStocks
 
-The builder adds CoinGecko's `xstocks-ecosystem` category to the crypto feed,
-deduplicated by CoinGecko ID. One request retrieves up to 250 category members
-with 1H / 24H / 7D / 30D returns and a seven-day sparkline when supplied.
-`ORBIT_XSTOCKS_REFRESH_SEC` defaults to 60 seconds (bounded to 60–180).
-The category and endpoint were checked against the public API; see the
-[CoinGecko market contract](https://docs.coingecko.com/reference/coins-markets).
-This adds at most one request per minute with the default setting,
-independent of visitors. Check the provider plan's monthly budget before release.
+A separate `orbit-xstocks.service` / timer reads Kraken's public API every
+30 minutes. It discovers USD tokenized-asset pairs through
+[AssetPairs](https://docs.kraken.com/api-reference/market-data/get-tradable-asset-pairs)
+and reads the latest trade of each through
+[Trades](https://docs.kraken.com/api-reference/market-data/get-recent-trades).
+No API key, account, paid plan or CoinGecko credit is used for xStocks.
+Requests are spaced by at least 1.1 seconds, within Kraken's documented
+[public limits](https://support.kraken.com/articles/206548367-what-are-the-api-rate-limits-).
+A cycle takes several minutes and cannot block the crypto collector.
 
-- The **xStocks** market view shows up to 50 category members ordered by token
-  market cap; the full collected catalog is searchable under **All assets /
-  Crypto / xStocks**. Both classes share the existing 50-favorite limit.
-- `asset_type` is `crypto` or `xstock`. `status.coingecko_xstocks` has its own
-  `fetched_at`, `last_success_at`, `ok` and `reused`. The category is bounded to
-  one page; `capped` is true if that page contains 250 rows.
-- Token price is required. Missing token market cap or volume stays null.
-  Price observation timestamps are preserved. Malformed timestamps are rejected.
-- A failed category refresh keeps only previously collected quotes, with their
-  original timestamps and an explicit failed status. No synthetic price or
-  equity-underlying substitution is used. Crypto collection continues.
-- xStocks never enter the crypto median, breadth, anomaly/activity scores or
-  BTC-relative comparisons. They receive no LunarCrush symbol matches.
-- Token sheets open directly on token market data, without crypto signal gauges.
-  Quotes aged 3–10 minutes are explicitly delayed, with their original dates;
-  older, undated or invalid quotes use neutral heatmap colors. This is a display
-  policy, not a real-time provider guarantee. Crypto signals retain their strict
-  three-minute checks. These are
-  tracker certificates with economic exposure, without shareholder voting rights;
+- The **xStocks** view lists all collected, traded USD tokens alphabetically
+  (maximum 250), with the last trade price and its actual date. Markets without
+  a trade are omitted. Both classes share the existing 50-favorite limit.
+- The private atomic cache is `/var/lib/orbit/.kraken-xstocks.json` (0600).
+  The main builder reads it without making any Kraken request. Public source
+  status is `status.kraken_xstocks`; coins carry `price_source: "kraken"`,
+  `market_pair`, `fetched_at` (check time) and `last_updated` (trade time).
+- Existing favorite IDs are retained when the token symbol matches uniquely.
+  Financial values from the previous CoinGecko token feed are never reused.
+- An old last trade can be correct for an inactive market. The interface shows
+  the date without calling the price real-time. Collection expires after
+  35 minutes; individual checks expire after 40 minutes to allow a paced cycle.
+  A failed cycle retains the preceding Kraken prices and dates with an explicit
+  failed status. No synthetic price or underlying equity price is substituted.
+- Comparable period returns, market cap, volume, ATH, supply, social metrics
+  and sparklines are absent from this view. xStocks never enter crypto signals,
+  medians, breadth or BTC-relative comparisons. Crypto retains its three-minute
+  collection checks.
+- These tokens provide economic exposure without shareholder voting rights;
   see [the issuer documentation](https://docs.xstocks.fi/docs/frequently-asked-questions).
-- Logos remain same-origin. HTTPS host/port restrictions and disabled redirects
-  are retained; the logo budget caps attempts, including failures, and alternates
-  between xStocks and crypto. CoinGecko credentials use request headers only.
+- Kraken requests use a fixed HTTPS origin, validated pair identifiers, bounded
+  response sizes and timeouts, and no redirects. The service does not read the
+  provider credentials file. Logos remain same-origin; existing token logos
+  may be reused, while new tokens use a neutral placeholder.
 
 To preview a real locally generated snapshot, preserving its timestamps:
 
@@ -246,21 +246,23 @@ formulas and privacy. Their contents are versioned with the app and deploy
 with the same `orbit-release` revision marker.
 
 For an existing installation, use `scripts/deploy_release.py` when changing the
-collector as well as the frontend. It validates the host contract, pauses only
-the timer during activation, saves the previous collector, validates a newly
+collectors as well as the frontend. It validates the host contract, backs up
+collectors and Kraken units, and preloads Kraken while crypto continues. It then
+pauses the crypto timer only during activation and validates a newly
 generated real crypto/xStocks snapshot, then publishes the four entry pages
 with immutable assets. Failures restore the collector and affected entry pages.
-Provider credentials, Apache configuration and the systemd timer are preserved.
-Feed cadence follows the builder defaults or existing environment overrides.
+Provider credentials, Apache configuration and the existing crypto timer are
+preserved. A dedicated hardened Kraken service and 30-minute timer are installed
+and included in rollback. The old `ORBIT_XSTOCKS_REFRESH_SEC` setting is retired.
 The precise administrator commands and rollback procedure are in [RUNBOOK.md](RUNBOOK.md).
 
-CoinGecko 429 responses trigger a shared, persistent cooldown across market,
-xStocks and global requests. The collector honors `Retry-After`, uses bounded
+CoinGecko 429 responses trigger a shared, persistent cooldown across crypto market
+and global requests. The collector honors `Retry-After`, uses bounded
 exponential backoff when the header is absent, and preserves quote and successful
 collection timestamps. A new snapshot may report a failed attempt and refresh
 independent sources. Requests are spaced by at least two seconds within a run.
 A failed crypto page never publishes a partial universe or prevents xStocks
-and macro collection; the shared CoinGecko cooldown still applies.
+and macro collection. Kraken is independent of that cooldown.
 The private cooldown file contains only numeric transport metadata, is outside
 the web root and is ignored by Git. See [HTTP 429 recovery](RUNBOOK.md#coingecko-http-429-recovery)
 for deployment waiting and rollback behavior.

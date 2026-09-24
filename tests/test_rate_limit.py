@@ -103,17 +103,13 @@ class RateLimitTests(unittest.TestCase):
             self.assertIsNone(data['status']['coingecko_markets']['fetched_at'])
             self.assertIn('retry_at', data['status']['coingecko_markets'])
 
-    def test_category_rate_limit_preserves_original_quotes_and_blocks_global_call(self):
-        old = {**coin('test-xstock'), 'asset_type': 'xstock'}
-        previous = {'coins': [old], 'status': {'coingecko_xstocks': {'ok': True, 'fetched_at': '2020-01-01T00:00:00Z'}}}
-        with patch.object(b, 'fetch', side_effect=self.limited('300')) as request:
-            coins, _, status = b.get_xstocks(previous)
-            self.assertEqual(coins, [old])
+    def test_kraken_cache_read_does_not_call_or_depend_on_coingecko(self):
+        Path(b.rate_limit_path()).write_text(json.dumps({'retry_at': 10**10, 'failures': 2}))
+        with patch.object(b, 'fetch') as request:
+            coins, _, status = b.get_xstocks({})
+            self.assertEqual(coins, [])
             self.assertFalse(status['ok'])
-            self.assertEqual(status['last_success_at'], '2020-01-01T00:00:00Z')
-            with self.assertRaises(b.CoinGeckoCooldown):
-                b.cg('global', {})
-            request.assert_called_once()
+            request.assert_not_called()
 
     def test_invalid_and_symlinked_transport_state_fail_before_network(self):
         file = Path(b.rate_limit_path())

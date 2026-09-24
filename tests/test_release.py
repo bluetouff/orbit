@@ -25,13 +25,15 @@ class ReleaseTests(unittest.TestCase):
         self.install = self.base / 'install'
         self.backups = self.base / 'backups'
         self.repo = self.base / 'repo'
-        for directory in (self.install, self.backups, self.repo / 'scripts'):
+        for directory in (self.install, self.backups, self.repo / 'scripts', self.repo / 'deploy', self.base / 'units'):
             directory.mkdir(parents=True)
         self.old = b'previous builder'
         (self.install / 'build_snapshot.py').write_bytes(self.old)
         for name, source in release.FILES.items():
             (self.repo / source).write_bytes(('new ' + name).encode())
-        for obj, attr, value in [(release, 'INSTALL', self.install), (release.front, 'BACKUPS', self.backups), (release.front, 'REPO', self.repo), (release, 'SNAPSHOT', self.base / 'orbit.json')]:
+        for name in release.UNITS:
+            (self.repo / 'deploy' / name).write_bytes(('new ' + name).encode())
+        for obj, attr, value in [(release, 'UNIT_DIR', self.base / 'units'), (release, 'INSTALL', self.install), (release.front, 'BACKUPS', self.backups), (release.front, 'REPO', self.repo), (release, 'SNAPSHOT', self.base / 'orbit.json')]:
             context = patch.object(obj, attr, value)
             context.start()
             self.addCleanup(context.stop)
@@ -108,7 +110,7 @@ class ReleaseTests(unittest.TestCase):
     def test_snapshot_requires_new_generation_and_independent_current_xstocks(self):
         now = dt.datetime.now(dt.timezone.utc)
         stamp = now.isoformat()
-        data = {'snapshot': stamp, 'coins': [{'asset_type': 'xstock'}], 'status': {name: {'ok': True, 'fetched_at': stamp} for name in ('coingecko_markets', 'coingecko_xstocks')}}
+        data = {'snapshot': stamp, 'coins': [{'asset_type': 'xstock', 'price_source': 'kraken', 'last_updated': stamp}], 'status': {name: {'ok': True, 'fetched_at': stamp} for name in ('coingecko_markets', 'kraken_xstocks')}}
         def check(value, start=0):
             release.SNAPSHOT.write_text(json.dumps(value))
             with patch.object(release.subprocess, 'run', return_value=argparse.Namespace(returncode=0)):
@@ -116,16 +118,50 @@ class ReleaseTests(unittest.TestCase):
         check(data)
         with self.assertRaisesRegex(ValueError, 'new snapshot'):
             check(data, now.timestamp() + 1)
-        data['status']['coingecko_xstocks']['ok'] = False
-        with self.assertRaisesRegex(ValueError, 'coingecko_xstocks'):
+        data['status']['kraken_xstocks']['ok'] = False
+        with self.assertRaisesRegex(ValueError, 'kraken_xstocks'):
             check(data)
-        data['status']['coingecko_xstocks'] = {'ok': True, 'fetched_at': (now-dt.timedelta(minutes=10)).isoformat()}
-        with self.assertRaisesRegex(ValueError, 'coingecko_xstocks'):
+        data['status']['kraken_xstocks'] = {'ok': True, 'fetched_at': (now-dt.timedelta(minutes=36)).isoformat()}
+        with self.assertRaisesRegex(ValueError, 'kraken_xstocks'):
             check(data)
-        data['status']['coingecko_xstocks']['fetched_at'] = stamp
+        data['status']['kraken_xstocks']['fetched_at'] = stamp
         data['coins'] = [{'asset_type': 'crypto'}]
         with self.assertRaisesRegex(ValueError, 'No xStocks'):
             check(data)
+
+    def test_crypto_timer_resumes_only_after_failed_release_has_restored_files(self):
+        order = []
+        def ctl(*args, **kwargs):
+            if args == ('start', release.TIMER):
+                self.assertEqual((self.install / 'build_snapshot.py').read_bytes(), self.old)
+                self.assertFalse((release.UNIT_DIR / release.KRAKEN_TIMER).exists())
+                order.append('resumed')
+        args = argparse.Namespace(revision=REV, apply=True, rollback=None)
+        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl', side_effect=ctl), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'collect_for_release', side_effect=ValueError('failed')):
+            with self.assertRaisesRegex(ValueError, 'failed'):
+                release.run(args)
+        self.assertEqual(order, ['resumed'])
+
+    def test_failed_rollback_never_restarts_the_new_crypto_code(self):
+        with patch.object(release, 'systemctl') as ctl, patch.object(release, 'property_value', return_value='inactive'):
+            def failed_restore():
+                raise ValueError('restore failed')
+            with self.assertRaisesRegex(ValueError, 'restore failed'):
+                with release.paused_timer(on_error=failed_restore):
+                    raise ValueError('collection failed')
+        ctl.assert_called_once_with('stop', release.TIMER)
+
+    def test_partial_kraken_install_can_restore_without_stopping_missing_units(self):
+        backup, record = release.create_backup(REV)
+        record['kraken_activation_started'] = True
+        self.activate_files()
+        unit = release.UNITS[0]
+        (release.UNIT_DIR / unit).write_bytes((self.repo / 'deploy' / unit).read_bytes())
+        with patch.object(release, 'systemctl') as ctl:
+            release.restore_collector(backup, record)
+        self.assertEqual([c.args for c in ctl.call_args_list], [('daemon-reload',), ('stop', unit), ('daemon-reload',)])
+        self.assertEqual((self.install / 'build_snapshot.py').read_bytes(), self.old)
+        self.assertFalse((self.install / 'collect_xstocks.py').exists())
 
     def test_wrong_output_paths_do_not_expose_credentials(self):
         env_file = self.base / 'provider.env'

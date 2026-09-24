@@ -126,6 +126,20 @@ def main(path):
                     return fail(f"{cid} last_updated needs a timezone")
             except ValueError:
                 return fail(f"{cid} has invalid last_updated")
+        if c.get('price_source') == 'kraken':
+            if c.get('asset_type') != 'xstock' or not re.fullmatch(r'[A-Z0-9.]{1,18}xUSD', str(c.get('market_pair', ''))):
+                return fail(f'{cid} has invalid Kraken identity')
+            try:
+                observed = datetime.fromisoformat(c['last_updated'].replace('Z', '+00:00'))
+                checked = datetime.fromisoformat(c['fetched_at'].replace('Z', '+00:00'))
+                if observed.tzinfo is None or checked.tzinfo is None or observed.timestamp() <= 0 or observed.timestamp() > checked.timestamp() + 60:
+                    return fail(f'{cid} has invalid Kraken dates')
+            except (KeyError, TypeError, AttributeError, ValueError):
+                return fail(f'{cid} has invalid Kraken dates')
+            if any(c.get(k) is not None for k in (*PCT_NUMS, *OPTIONAL_NUMS, 'market_cap', 'total_volume', 'market_cap_rank', 'spark')):
+                return fail(f'{cid} mixes unavailable Kraken metrics')
+            if not is_num(c.get('current_price')) or c['current_price'] <= 0:
+                return fail(f'{cid} has invalid Kraken trade price')
         for k in REQUIRED_NUMS:
             if c.get("asset_type") == "xstock" and k != "current_price" and c.get(k) is None:
                 continue

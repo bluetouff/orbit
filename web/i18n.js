@@ -140,7 +140,25 @@
     'Intellectual property':'Propriété intellectuelle','The Orbit2 software and repository documentation are available under the':'Le logiciel Orbit2 et la documentation du dépôt sont disponibles sous la','MIT License':'licence MIT',
     ". Copyright and license notices must be preserved. Third-party market data, provider services and cryptocurrency logos remain governed by their owners' terms and are not relicensed under MIT.":'. Les mentions de droit d’auteur et de licence doivent être conservées. Les données de marché tierces, les services des fournisseurs et les logos crypto restent soumis aux conditions de leurs titulaires et ne sont pas placés sous licence MIT.',
     'Back to Orbit2':'Retour à Orbit2','l0g Lab · no trackers · same-origin data':'l0g Lab · sans traceurs · données de même origine',
-    // xStocks catalog and token-specific context.
+    "Kraken · last trades in USD · collected every 30 min":"Kraken · derniers échanges en USD · collecte toutes les 30 min",
+    "{n} xStocks on Kraken":"{n} xStocks sur Kraken",
+    "Last traded prices · USD":"Derniers prix échangés · USD",
+    "{period} crypto performance · USD":"Performance crypto sur {period} · USD",
+    "xStocks on Kraken":"xStocks sur Kraken",
+    "A last trade can be old when no recent exchange took place.":"Le dernier échange peut être ancien si aucune transaction récente n’a eu lieu.",
+    "xStocks are outside the crypto signals. Each quote shows a Kraken trade price and its original date.":"Les xStocks restent exclus des signaux crypto. Chaque cotation indique le prix d’un échange Kraken et sa date originale.",
+    "Kraken · token market data":"Kraken · marché des tokens",
+    "Traded {age}":"Échange : {age}",
+    "The Kraken feed is unavailable. Please try again later.":"Le flux Kraken est indisponible. Réessayez plus tard.",
+    "Last traded price":"Dernier prix échangé",
+    "Last trade":"Dernier échange",
+    "Details for {name}":"Fiche de {name}",
+    "Collection unavailable":"Collecte indisponible",
+    "Last traded price on Kraken · USD":"Dernier prix échangé sur Kraken · USD",
+    "Checked on Kraken":"Vérifié sur Kraken",
+    "These prices describe the token on Kraken. Market cap, volume and comparable period returns are not provided in this view.":"Ces prix concernent le token sur Kraken. La capitalisation, le volume et les variations comparables par période ne sont pas fournis dans cette vue.",
+    'Last trade {age}':'Dernier échange {age}',
+  // xStocks catalog and token-specific context.
     'Delayed token quotes':'Cotations différées des tokens',
     '{n} quotes older than 10 min':'{n} cotations de plus de 10 min',
     'Collection current':'Collecte à jour',
@@ -193,7 +211,7 @@
     "Crypto assets with a valid return in the current market snapshot form the reference, including stablecoins. xStocks are excluded from this reference and from crypto signals. Changing your watchlist or filtering the map does not change this reference. At least 20 valid observations are required.":"Les actifs crypto ayant une performance valide dans l’instantané forment la référence, stablecoins compris. Les xStocks sont exclus de cette référence et des signaux crypto. Modifier vos favoris ou filtrer la carte ne change pas cette référence. Au moins 20 observations valides sont nécessaires.",
     "A price return more than two standard deviations from the reference mean, or unusually high 24-hour volume relative to market cap. The reference includes crypto assets with usable data, not just your favorites. xStocks are excluded.":"Une performance éloignée de plus de deux écarts-types de la moyenne de référence, ou un volume sur 24 heures inhabituellement élevé par rapport à la capitalisation. La référence inclut les actifs crypto aux données exploitables, pas seulement vos favoris. Les xStocks en sont exclus.",
     "What are xStocks?":"Que sont les xStocks ?",
-    "xStocks are tokenized tracker certificates providing economic exposure to stocks or ETFs, without shareholder voting rights. Orbit shows the token market price, volume and capitalization, which are distinct from those of the underlying security. Trading liquidity and opening hours depend on the venue.":"Les xStocks sont des certificats tokenisés donnant une exposition économique à des actions ou ETF, sans droit de vote d’actionnaire. Orbit affiche le prix, le volume et la capitalisation du token, distincts de ceux du titre sous-jacent. La liquidité et les horaires de négociation dépendent de la plateforme."
+    "xStocks are tokenized tracker certificates providing economic exposure to stocks or ETFs, without shareholder voting rights. Orbit shows the last token trade price on Kraken and its original date. This view does not provide period returns, volume or capitalization, and never substitutes the underlying stock price. Trading liquidity and opening hours depend on the venue.":"Les xStocks sont des certificats tokenisés donnant une exposition économique à des actions ou ETF, sans droit de vote d’actionnaire. Orbit affiche le dernier prix échangé du token sur Kraken et sa date originale. Cette vue ne fournit ni variations par période, ni volume, ni capitalisation, et ne substitue jamais le cours de l’action. La liquidité et les horaires de négociation dépendent de la plateforme."
   };
   function translate(key,language,values={}){
     const source=String(key),message=language==='fr'&&Object.hasOwn(fr,source)?fr[source]:source;
