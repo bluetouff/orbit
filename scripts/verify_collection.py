@@ -5,6 +5,7 @@ import json
 import time
 
 from deploy_front import public
+from validate_snapshot import is_crypto
 
 
 class CollectionError(ValueError):
@@ -22,35 +23,30 @@ def timestamp(value):
 
 def inspect(data, now):
     result = {}
-    for key in ('coingecko_markets', 'kraken_xstocks'):
+    for key in ('coingecko_markets',):
         status = data.get('status', {}).get(key, {})
         if status.get('ok') is not True:
             raise CollectionError(f'{key}: collection unavailable')
         stamp = timestamp(status.get('fetched_at'))
         age = now - stamp
-        maximum = 2100 if key == 'kraken_xstocks' else 180
+        maximum = 180
         if not -60 <= age <= maximum:
             raise CollectionError(f'{key}: collection age {age:.0f}s exceeds the release check')
         result[key] = stamp
-    stocks = [c for c in data.get('coins', []) if c.get('asset_type') == 'xstock']
-    if not stocks:
-        raise CollectionError('No xStocks in the public feed')
-    for coin in stocks:
-        if coin.get('price_source') != 'kraken':
-            raise CollectionError('xStocks source is not Kraken')
-        observed = timestamp(coin.get('last_updated'))
-        checked = timestamp(coin.get('fetched_at'))
-        if not -60 <= now - checked <= 2400 or observed <= 0 or observed > checked + 60:
-            raise CollectionError('Invalid or unchecked Kraken trade date')
-    return result, len(stocks), len(stocks)
+    coins = data.get('coins', [])
+    if not coins or any(not is_crypto(c) for c in coins):
+        raise CollectionError('Expected exclusively crypto assets')
+    if any('xstock' in key.lower() for key in data.get('status', {})):
+        raise CollectionError('Retired source remains in public feed')
+    return result, len(coins)
 
 
-def verify(timeout=600, interval=30, kraken_renewal=False):
+def verify(timeout=600, interval=30):
     deadline = time.monotonic() + timeout
-    previous, advances = {}, {'coingecko_markets': 0, 'kraken_xstocks': 0}
+    previous, advances = {}, {'coingecko_markets': 0}
     while True:
         data = json.loads(public('/data.json')[0])
-        current, recent, total = inspect(data, time.time())
+        current, total = inspect(data, time.time())
         for key, stamp in current.items():
             if key in previous:
                 if stamp < previous[key]:
@@ -58,9 +54,9 @@ def verify(timeout=600, interval=30, kraken_renewal=False):
                 if stamp > previous[key]:
                     advances[key] += 1
         previous = current
-        print(f'Collection updates: crypto={advances["coingecko_markets"]}, xStocks={advances["kraken_xstocks"]}; dated Kraken trades: {recent}/{total}.', flush=True)
-        if advances['coingecko_markets'] >= 2 and (not kraken_renewal or advances['kraken_xstocks'] >= 1):
-            print('PASS: crypto renewed twice; Kraken collection valid, original trade dates checked.' + (' Kraken renewed once.' if kraken_renewal else ' Kraken recurrence needs the extended check.'))
+        print(f'Collection updates: crypto={advances["coingecko_markets"]}; {total} crypto assets.', flush=True)
+        if advances['coingecko_markets'] >= 2:
+            print('PASS: crypto collection renewed twice; crypto-only public feed confirmed.')
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -70,11 +66,7 @@ def verify(timeout=600, interval=30, kraken_renewal=False):
 
 if __name__ == '__main__':
     try:
-        import argparse
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("--kraken-renewal", action="store_true", help="Also wait for a scheduled Kraken renewal (up to 40 minutes)")
-        args = parser.parse_args()
-        verify(timeout=2400 if args.kraken_renewal else 600, kraken_renewal=args.kraken_renewal)
+        verify()
     except Exception as error:
         # Only locally authored validation errors may be printed; HTTP exceptions
         # can carry URLs and untrusted upstream response details.

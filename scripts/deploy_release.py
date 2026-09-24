@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guarded collector + frontend release, run by the administrator on the host.
 
-Preserves provider environment, service configuration, timer and generated data.
+Preserves provider environment and the crypto service and timer. Retires xStocks.
 Default: read-only checks. --apply and --rollback require root.
 """
 import argparse
@@ -21,7 +21,7 @@ import deploy_front as front
 INSTALL = Path('/opt/orbit')
 SNAPSHOT = Path('/var/lib/orbit/orbit.json')
 ENV_FILE = Path('/etc/orbit/orbit.env')
-FILES = {'build_snapshot.py': 'build_snapshot.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': 'collect_xstocks.py'}
+FILES = {'build_snapshot.py': 'build_snapshot.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': None}
 UNIT_DIR = Path('/etc/systemd/system')
 KRAKEN_SERVICE = 'orbit-xstocks.service'
 KRAKEN_TIMER = 'orbit-xstocks.timer'
@@ -31,7 +31,7 @@ TIMER = 'orbit-snapshot.timer'
 
 
 class CollectionNotReady(ValueError):
-    """A valid snapshot has not yet received current crypto and xStocks data."""
+    """A valid snapshot has not yet received current crypto data."""
 
 
 def systemctl(*args, timeout=180):
@@ -147,14 +147,14 @@ def create_backup(revision):
             if target.stat().st_uid != 0 or target.stat().st_mode & 0o022:
                 raise ValueError('Kraken units must be root-owned and not writable by others')
             (backup / 'units' / name).write_bytes(old)
-        record['units'][name] = {'old': front.body_hash(old), 'new': front.digest((front.REPO / 'deploy' / name).read_bytes()),
+        record['units'][name] = {'old': front.body_hash(old), 'new': None,
             'enabled': old is not None and property_value(name, 'UnitFileState') == 'enabled',
             'active': old is not None and property_value(name, 'ActiveState') == 'active'}
     for name, source in FILES.items():
         old = read_installed(name)
         if old is not None:
             (backup / name).write_bytes(old)
-        record['files'][name] = {'old': front.body_hash(old), 'new': front.digest((front.REPO / source).read_bytes())}
+        record['files'][name] = {'old': front.body_hash(old), 'new': front.digest((front.REPO / source).read_bytes()) if source else None}
     save_record(backup, record)
     return backup, record
 
@@ -230,24 +230,22 @@ def resume_previous_kraken(record):
         systemctl('start', KRAKEN_TIMER)
 
 
-def prepare_kraken(backup, record):
+def retire_kraken(backup, record):
     check_kraken_restore(backup, record)
+    # Persist the recovery point before stopping or removing anything.
     record['kraken_activation_started'] = True
     save_record(backup, record)
     if record['units'][KRAKEN_TIMER]['old'] is not None:
         systemctl('stop', KRAKEN_TIMER)
-        deadline = time.monotonic() + 600
-        while property_value(KRAKEN_SERVICE, 'ActiveState') in ('active', 'activating', 'deactivating'):
-            if time.monotonic() >= deadline:
-                raise ValueError('Previous Kraken collection still running')
-            time.sleep(5)
-    front.atomic_write(installed('collect_xstocks.py'), (front.REPO / 'collect_xstocks.py').read_bytes())
+        systemctl('disable', KRAKEN_TIMER)
+    if record['units'][KRAKEN_SERVICE]['old'] is not None:
+        systemctl('stop', KRAKEN_SERVICE)
     for name in UNITS:
-        front.atomic_write(front.target(UNIT_DIR, name), (front.REPO / 'deploy' / name).read_bytes())
+        if record['units'][name]['old'] is not None and property_value(name, 'ActiveState') in ('active', 'activating', 'deactivating'):
+            raise ValueError('Retired collector still running; refusing removal')
+        front.target(UNIT_DIR, name).unlink(missing_ok=True)
     systemctl('daemon-reload')
-    print('Preparing public Kraken prices. The existing crypto timer remains active; this can take several minutes.', flush=True)
-    systemctl('start', KRAKEN_SERVICE, timeout=610)
-    systemctl('enable', '--now', KRAKEN_TIMER)
+    print('xStocks collector and timer retired. Crypto cadence preserved.', flush=True)
 
 
 def validate_collected(started):
@@ -258,16 +256,18 @@ def validate_collected(started):
     generated = dt.datetime.fromisoformat(data['snapshot'].replace('Z', '+00:00'))
     if generated.timestamp() < started:
         raise CollectionNotReady('Collector did not produce a new snapshot')
-    for name in ('coingecko_markets', 'kraken_xstocks'):
+    for name in ('coingecko_markets',):
         status = data.get('status', {}).get(name, {})
         stamp = dt.datetime.fromisoformat((status.get('fetched_at') or '').replace('Z', '+00:00'))
         age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
-        if status.get('ok') is not True or not -60 <= age <= (2100 if name == 'kraken_xstocks' else 180):
+        if status.get('ok') is not True or not -60 <= age <= 180:
             raise CollectionNotReady(f'{name} is unavailable or stale; rolling back')
-    count = sum(c.get('asset_type') == 'xstock' and c.get('price_source') == 'kraken' and bool(c.get('last_updated')) for c in data['coins'])
-    if not count:
-        raise CollectionNotReady('No xStocks collected; rolling back')
-    print(f'New snapshot valid: {len(data["coins"])} assets, {count} xStocks, crypto and independent Kraken collection current.')
+    from validate_snapshot import is_crypto
+    if not data['coins'] or any(not is_crypto(c) for c in data['coins']):
+        raise ValueError('Expected exclusively crypto assets')
+    if any('xstock' in key.lower() for key in data.get('status', {})):
+        raise ValueError('Retired source remains in snapshot')
+    print(f'New snapshot valid: {len(data["coins"])} crypto assets, collection current.')
 
 
 def provider_retry_at():
@@ -353,20 +353,16 @@ def run(args):
             front.run(argparse.Namespace(revision=None, apply=False, rollback=record['front_backup']))
         restore_collector(backup, record)
         print('Release failed: previous collector, Kraken units and front restored.', flush=True)
-    try:
-        # Warm up Kraken while crypto continues on the existing timer.
-        prepare_kraken(backup, record)
-    except BaseException:
-        undo()
-        raise
     # Restore inside the pause, before its finally block restarts the timer.
     with paused_timer(on_error=undo):
+        retire_kraken(backup, record)
         for name, source in FILES.items():
-            if name == 'collect_xstocks.py':
-                continue
             if front.body_hash(read_installed(name)) != record['files'][name]['old']:
                 raise ValueError('Collector changed during deployment')
-            front.atomic_write(installed(name), (front.REPO / source).read_bytes())
+            if source is None:
+                installed(name).unlink(missing_ok=True)
+            else:
+                front.atomic_write(installed(name), (front.REPO / source).read_bytes())
         collect_for_release()
         def remember_front(front_backup):
             record['front_backup'] = front_backup.name

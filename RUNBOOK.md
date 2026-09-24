@@ -44,7 +44,7 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin orbit
 
 sudo install -d -o orbit -g orbit -m 755 /var/lib/orbit /var/lib/orbit/logos
 sudo install -d -m 755 /opt/orbit
-sudo install -o root -g root -m 0755 build_snapshot.py collect_xstocks.py /opt/orbit/
+sudo install -o root -g root -m 0755 build_snapshot.py /opt/orbit/
 sudo install -o root -g root -m 0755 scripts/validate_snapshot.py /opt/orbit/validate_snapshot.py
 
 sudo install -d -m 755 /var/www/html/orbit
@@ -85,7 +85,6 @@ reference or substitutes for missing crypto returns.
 ## 3. First Manual Build
 
 ```bash
-sudo -u orbit ORBIT_OUT_DIR=/var/lib/orbit /usr/bin/python3 /opt/orbit/collect_xstocks.py
 sudo -u orbit ORBIT_OUT_DIR=/var/lib/orbit /usr/bin/python3 /opt/orbit/build_snapshot.py
 ls -lh /var/lib/orbit/orbit.json /var/lib/orbit/logos | head
 /usr/bin/python3 /opt/orbit/validate_snapshot.py /var/lib/orbit/orbit.json
@@ -96,9 +95,9 @@ ls -lh /var/lib/orbit/orbit.json /var/lib/orbit/logos | head
 ## 4. systemd Timer
 
 ```bash
-sudo cp deploy/orbit-snapshot.service deploy/orbit-snapshot.timer deploy/orbit-xstocks.service deploy/orbit-xstocks.timer /etc/systemd/system/
+sudo cp deploy/orbit-snapshot.service deploy/orbit-snapshot.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now orbit-snapshot.timer orbit-xstocks.timer
+sudo systemctl enable --now orbit-snapshot.timer
 systemctl list-timers orbit-snapshot.timer
 journalctl -u orbit-snapshot.service -n 20 --no-pager
 ```
@@ -132,7 +131,7 @@ There must be no request to `coingecko.com`, `coin-images.coingecko.com`,
 
 User traffic is decoupled from data providers:
 
-- Browsers never contact CoinGecko, Kraken, LunarCrush or FRED.
+- Browsers never contact CoinGecko, LunarCrush or FRED.
 - 50,000 concurrent users read the same static `/data.json` and the same
   self-hosted `/logos/*.png`.
 - Provider call volume depends only on the systemd timer, not on traffic.
@@ -143,7 +142,7 @@ at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
 3600 s. That is at most 2.5 CoinGecko calls per minute on average at rest
 (108,000 calls per 30 days at that upper bound). The Demo monthly allowance
 cannot sustain that upper bound; do not enable a Demo key assuming minute limits
-alone are sufficient. Kraken xStocks consume no CoinGecko calls. This is not a
+alone are sufficient. This is not a
 guarantee against rate limits: check both minute limits and monthly credits on
 the actual provider plan. Browser population does not change that number.
 Missing logos are downloaded in bounded batches
@@ -181,14 +180,6 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 - **Slow-source TTLs**: `ORBIT_GLOBAL_REFRESH_SEC` (default 120),
   `ORBIT_SOCIAL_REFRESH_SEC` (default 900), `ORBIT_MACRO_REFRESH_SEC`
   (default 3600). Non-due sources are reused from the previous snapshot.
-- **xStocks**: the independent `orbit-xstocks.timer` runs every 30 minutes.
-  `collect_xstocks.py` calls public Kraken AssetPairs, then Trades once per
-  unique USD token pair, with 1.1 seconds between requests (maximum 250 pairs).
-  Its atomic private cache is `.kraken-xstocks.json` (0600), read by the main
-  builder without network calls. Check `status.kraken_xstocks` separately from
-  crypto freshness. Failed cycles retain prior Kraken prices and original dates.
-  Last trade time is distinct from check time; an old trade is not automatically
-  a failed collection. The old `ORBIT_XSTOCKS_REFRESH_SEC` setting is unused.
 - **Depth**: `ORBIT_TOP` (universe) and `ORBIT_SPARK_TOP` (coins with sparkline)
   in `orbit.env`. The larger it is, the heavier `orbit.json` gets.
 - **Logo warmup**: `ORBIT_LOGO_FETCH_PER_RUN` caps new logo downloads per build.
@@ -263,10 +254,10 @@ tabs or rollback entry pages may still refer to them.
 - FRED/LunarCrush/CoinGecko keys live in `/etc/orbit/orbit.env` (640), injected
   by systemd, never on disk where the front can access them.
 
-## Coordinated xStocks and documentation release
+## Coordinated collector and documentation release
 
 This release changes the collector and the frontend. A frontend-only update
-does not populate the xStocks catalog. From a clean checkout on the production
+does not update the collection process. From a clean checkout on the production
 host at the full approved SHA, run:
 
 ```bash
@@ -280,16 +271,17 @@ timer, exact Git revision, public pages, CSP and market snapshot. A mismatch
 blocks activation instead of rewriting the host configuration.
 
 Activation takes the shared deployment lock and checks output paths without
-printing credentials. It saves the collectors, validator and any existing Kraken
-units before installing the dedicated hardened `orbit-xstocks.service` and its
-30-minute timer. Kraken preloading runs while the existing crypto timer remains
-active. The worker does not receive `/etc/orbit/orbit.env` or any API key.
-After that first cycle succeeds, activation pauses the crypto timer, waits for
-an in-flight collection, and atomically replaces the main builder and validator.
+printing credentials. It saves the collector, validator and any legacy Kraken
+worker and units. Activation pauses the crypto timer and waits for an in-flight
+collection. It stops and disables `orbit-xstocks.timer`, stops its service,
+removes both unit files and `collect_xstocks.py`, reloads systemd, then installs
+the crypto-only builder and validator. The previous unit state is recorded before
+any change so failures can restore it. Private token caches and logos remain
+outside the web root; the builder never reads the token caches.
 A quiet minute prevents an immediate extra burst after the preceding production
 collection. The existing service collects with its own provider environment.
-The new snapshot must pass the schema validator, contain xStocks and have
-current successful crypto and xStocks statuses before the frontend is published.
+The new snapshot must pass the schema validator, contain only crypto assets and
+have a successful crypto collection no older than three minutes before publication.
 The timer configuration remains unchanged. Before resuming it, including after
 a rollback to a legacy collector, the script honors a recorded provider cooldown.
 It waits at most 30 minutes at this recovery step. A longer or malformed cooldown
@@ -310,33 +302,29 @@ not copy preview snapshots or provider credentials to production.
 
 After activation, verify `/`, `/legal/`, `/docs/` and `/docs/en/` all expose the
 approved `orbit-release` SHA; compare the served immutable assets with that
-checkout. Verify xStocks quotes and original observation times, independent
-source status, mixed favorites, FR/EN navigation, mobile layout, CSP, no cookies
+checkout. Verify crypto quotes and original observation times, source status,
+favorites, FR/EN navigation, mobile layout, CSP, no cookies
 and no third-party browser requests. The guide pages require no JavaScript.
 
-After activation, the quick public check requires two crypto renewals and a
-valid Kraken collection (up to ten minutes, no provider API calls):
+After activation, the public check requires two crypto collection renewals
+(up to ten minutes, no provider API calls):
 
 ```bash
 python3 scripts/verify_collection.py
 ```
 
-To also prove a scheduled Kraken renewal, allow up to 40 minutes:
+It rejects failed collections, regressing source dates, collections older than
+three minutes and any remaining token or xStocks source. A new file date alone
+cannot pass. Check the retired units are inactive and disabled on the host:
 
 ```bash
-python3 scripts/verify_collection.py --kraken-renewal
+systemctl is-active orbit-xstocks.service orbit-xstocks.timer
+systemctl is-enabled orbit-xstocks.timer
 ```
 
-Both modes reject failed collections, regressing source dates, crypto collections
-older than 3 minutes and Kraken collections older than 35 minutes. Each token must
-have a valid original trade date and a check no older than 40 minutes. Quiet-market
-trades may be old; their dates are never rewritten to pass the check. A fresh file
-alone cannot pass. The quick check explicitly does not prove Kraken recurrence.
-
+`inactive` / `not-found` are expected, with a nonzero command exit status.
 The crypto timer, provider environment, macro and social settings are preserved.
 Validate both minute limits and monthly credits for the actual CoinGecko plan.
-Kraken public rate limits are independent; see the
-[official limits](https://support.kraken.com/articles/206548367-what-are-the-api-rate-limits-).
 
 ## CoinGecko HTTP 429 recovery
 

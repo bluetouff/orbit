@@ -15,16 +15,17 @@ const base=new URL(process.env.ORBIT_DOCS_URL||'http://127.0.0.1:8767/web/docs/'
       const response=await page.goto(url);assert.equal(response.status(),200);
       assert.equal(await page.locator('html').getAttribute('lang'),lang);
       assert.equal(await page.locator('h1').count(),1);
-      assert.equal(await page.locator('.docs-section').count(),6);
+      assert.equal(await page.locator('.docs-section').count(),5);
       assert.equal(await page.locator('script').count(),0);
+      assert.doesNotMatch(await page.locator('body').textContent(),/xstocks|kraken/i);
       assert.equal(await page.locator('a[aria-current="page"]').getAttribute('lang'),lang);
       for(const [width,height]of [[1440,950],[768,1024],[390,844],[320,568]]){
         await page.setViewportSize({width,height});
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`${lang} overflow at ${width}`);
         await page.screenshot({path:path.join(screenshots,`guide-${lang}-${width}.png`),fullPage:true});
       }
-      await page.locator('.docs-toc a[href="#docs-xstocks"]').click();
-      assert.equal(new URL(page.url()).hash,'#docs-xstocks');
+      await page.locator('.docs-toc a[href="#docs-sources"]').click();
+      assert.equal(new URL(page.url()).hash,'#docs-sources');
       assert.ok(await page.evaluate(()=>scrollY)>0);
       await page.keyboard.press('Tab');
       const links=await page.locator('a[href]').evaluateAll(as=>as.map(a=>({raw:a.getAttribute('href'),url:a.href})));

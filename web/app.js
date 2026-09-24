@@ -4,15 +4,15 @@ const ASSET_BASE=new URL('.',document.currentScript.src);
 const FAV_KEY='orbit.favs.v1',SETTINGS_KEY='orbit.settings.v2';
 function readStorage(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}}
 const saved=readStorage(FAV_KEY,[]);
-const state={snapshot:null,selected:new Set((Array.isArray(saved)?saved:[]).filter(id=>typeof id==='string'&&C.ID.test(id)).slice(0,50)),
-  settings:C.settings(readStorage(SETTINGS_KEY,null)),view:'fav',catalog:'all',onboarding:false,picking:false,analysis:null,loading:true,error:false,activeCoin:null,assetTab:'signals'};
+const state={snapshot:null,selected:new Set((Array.isArray(saved)?saved:[]).filter(id=>typeof id==='string'&&C.ID.test(id)&&!C.isXstock({id})).slice(0,50)),
+  settings:C.settings(readStorage(SETTINGS_KEY,null)),view:'fav',onboarding:false,picking:false,analysis:null,loading:true,error:false,activeCoin:null,assetTab:'signals'};
 state.onboarding=state.selected.size===0||new URL(location.href).searchParams.get('view')==='home';
 let busy=false,refreshTimer,toastTimer,manageLimit=80,pendingImport=null,rects=[],canvasFrame=0;
 const logos=new Map(),canvas=$('map'),ctx=canvas.getContext('2d');
 const locale=()=>OrbitI18n.language==='fr'?'fr-FR':'en-US';
 const decimal=(v,digits=2)=>new Intl.NumberFormat(locale(),{minimumFractionDigits:digits,maximumFractionDigits:digits}).format(v);
 const pct=v=>v==null?t('Unavailable'):(v>=0?'+':'')+decimal(v,Math.abs(v)>=10?1:2)+'%';
-const price=(v,token=false)=>v==null?t('Unavailable'):new Intl.NumberFormat(locale(),{style:'currency',currency:'USD',minimumFractionDigits:token&&v>=1?2:0,maximumFractionDigits:v<1?8:token||v<100?2:0}).format(v);
+const price=v=>v==null?t('Unavailable'):new Intl.NumberFormat(locale(),{style:'currency',currency:'USD',minimumFractionDigits:0,maximumFractionDigits:v<1?8:v<100?2:0}).format(v);
 const big=v=>v==null?t('Unavailable'):new Intl.NumberFormat(locale(),{notation:'compact',maximumFractionDigits:2,style:'currency',currency:'USD'}).format(v);
 const date=v=>C.time(v)===null?t('Unknown'):new Date(v).toLocaleString(OrbitI18n.language==='fr'?'fr-FR':'en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'UTC'})+' UTC';
 const age=ms=>ms==null||ms<0?t('Unknown'):ms<60000?t('Just now'):ms<3600000?t('{n}m ago',{n:Math.floor(ms/60000)}):ms<86400000?t('{n}h ago',{n:Math.floor(ms/3600000)}):t('{n}d ago',{n:Math.floor(ms/86400000)});
@@ -24,9 +24,8 @@ function button(label,className,handler){const n=el('button',className,label);n.
 function toast(message){$('toast').textContent=t(message);$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500);}
 function save(){try{localStorage.setItem(FAV_KEY,JSON.stringify([...state.selected]));localStorage.setItem(SETTINGS_KEY,JSON.stringify(state.settings));}catch{toast('Browser storage is unavailable. Export your watchlist to keep it.');}}
 function coins(){return state.snapshot?.coins||[];}
-function xstockCoins(){return coins().filter(C.isXstock).sort((a,b)=>a.name.localeCompare(b.name,locale()));}
 function byId(id){return coins().find(c=>c.id===id);}
-function sourceCoins(){return state.view==='market'?coins().filter(c=>!C.isXstock(c)).slice(0,100):state.view==='xstocks'?xstockCoins():[...state.selected].map(byId).filter(Boolean);}
+function sourceCoins(){return state.view==='market'?coins().slice(0,100):[...state.selected].map(byId).filter(Boolean);}
 function mapCoins(){return state.onboarding&&!state.selected.size?['bitcoin','ethereum','solana','chainlink','uniswap','aave'].map(byId).filter(Boolean):sourceCoins();}
 function eventsFor(c){return state.analysis?.byId.get(c.id);}
 function toggleCoin(id){
@@ -55,87 +54,36 @@ function render(){
   document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===state.view)));
   $('filterSelect').value=state.settings.filter;$('sizeSelect').value=state.settings.metric;
   $('signalsToggle').setAttribute('aria-expanded',String(state.settings.signalsOpen));
-  $('signalsToggleLabel').textContent=t(state.view==='xstocks'?'Details':'Signals');
-  $('signalCount').hidden=state.view==='xstocks';
-  $('closeSignals').title=t(state.view==='xstocks'?'Hide details':'Hide signals');
+  $('signalsToggleLabel').textContent=t('Signals');
+  $('closeSignals').title=t('Hide signals');
   $('closeSignals').setAttribute('aria-label',$('closeSignals').title);
-  $('mapTitle').textContent=t(state.onboarding?(state.selected.size?'Your selection':'Market preview'):state.view==='xstocks'?'xStocks':state.view==='market'?'Crypto market':'Watchlist');
+  $('mapTitle').textContent=t(state.onboarding?(state.selected.size?'Your selection':'Market preview'):state.view==='market'?'Crypto market':'Watchlist');
   const list=mapCoins(),returns=list.filter(c=>C.quoteState(state.snapshot,c).usable).map(c=>c[C.TF[state.settings.tf]]).filter(Number.isFinite);
-  const xcount=list.filter(C.isXstock).length;
-  $('mapScope').hidden=!xcount&&state.view!=='xstocks';
-  $('mapScope').textContent=t('Kraken · last trades in USD · collected every 30 min');
-  const quotesOnly=state.view==='xstocks'||(list.length>0&&xcount===list.length);
-  $('periodControl').hidden=quotesOnly;
-  $('filterSelect').closest('label').hidden=quotesOnly;
-  $('sizeSelect').closest('label').hidden=quotesOnly;
-  document.querySelector('.legend').hidden=quotesOnly;
-  $('stage').hidden=quotesOnly;
   const missing=state.view==='fav'?state.selected.size-sourceCoins().length:0;
   $('mapSummary').textContent=t(list.length===1?'{n} asset':'{n} assets',{n:list.length})+(missing?t(' · {n} unavailable',{n:missing}):'')+(returns.length?t(' · mean {value}',{value:pct(returns.reduce((a,b)=>a+b,0)/returns.length)}):'');
-  if(state.view==='xstocks')$('mapSummary').textContent=t('{n} xStocks on Kraken',{n:list.length});
-  $('periodCaption').textContent=quotesOnly?t('Last traded prices · USD'):t('{period} crypto performance · USD',{period:t(periods[state.settings.tf])});
-  renderSources();renderMarketContext();renderSignals();renderXstockQuotes();drawMap();renderSelection();
-}
-function renderXstockQuotes(){
-  const box=$('xstockQuotes'),items=mapCoins().filter(C.isXstock),focused=document.activeElement?.dataset?.quote;
-  box.hidden=!items.length&&state.view!=='xstocks';box.classList.toggle('quotes-full',state.view==='xstocks'||!mapCoins().some(c=>!C.isXstock(c)));box.replaceChildren();
-  if(box.hidden)return;
-  if(!items.length){box.append(el('p','empty-description','The Kraken feed is unavailable. Please try again later.'));return;}
-  const table=el('table','quote-table'),head=el('thead'),row=el('tr');
-  for(const label of ['xStock','Last traded price','Last trade']){const th=el('th','',label);th.scope='col';row.append(th);}
-  head.append(row);table.append(head);const body=el('tbody');
-  for(const c of items){
-    const tr=el('tr'),identity=el('th');identity.scope='row';
-    const open=button('','quote-asset',()=>openAsset(c.id));open.dataset.quote=c.id;open.setAttribute('aria-label',t('Details for {name}',{name:c.name}));
-    const name=el('span');name.append(el('b','',c.name,false),el('small','',c.symbol.toUpperCase(),false));open.append(coinImage(c),name);identity.append(open);
-    const value=el('td','quote-price',price(c.current_price,true),false),observed=el('td','quote-date');
-    const timeNode=el('time','',date(c.last_updated),false);if(c.last_updated)timeNode.dateTime=c.last_updated;
-    observed.append(timeNode);if(!C.quoteState(state.snapshot,c).usable)observed.append(el('small','warning','Collection unavailable'));
-    tr.append(identity,value,observed);body.append(tr);
-  }
-  table.append(body);box.append(table);
-  if(focused)box.querySelector(`[data-quote="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
-}
-function renderXstockAsset(c,scrollTop,restoreFocus){
-  const identity=$('assetIdentity');identity.replaceChildren(coinImage(c));const name=el('div');
-  name.append(el('h2','',c.name,false),el('span','muted',c.symbol.toUpperCase(),false));name.querySelector('h2').id='assetTitle';identity.append(name);
-  const body=$('assetContent');body.replaceChildren();
-  const head=el('div','asset-price');head.append(el('b','',price(c.current_price,true),false));
-  const fav=button('','icon-button',()=>toggleCoin(c.id));fav.id='assetFavorite';fav.title=t(state.selected.has(c.id)?'Remove from watchlist':'Add to watchlist');fav.setAttribute('aria-label',fav.title);fav.setAttribute('aria-pressed',String(state.selected.has(c.id)));fav.append(icon('star'));head.append(fav);body.append(head);
-  body.append(el('p','observation-quality','Last traded price on Kraken · USD'));
-  const q=C.quoteState(state.snapshot,c);
-  if(!q.usable)body.append(el('p','quote-warning','Collection interrupted · last received quote.'));
-  const dates=el('div','detail-grid');dates.append(metric('Last trade',date(c.last_updated)),metric('Checked on Kraken',date(c.fetched_at)));body.append(dates);
-  const note=el('div','xstock-notice');note.append(el('p','','A last trade can be old when no recent exchange took place.'),el('p','','These prices describe the token on Kraken. Market cap, volume and comparable period returns are not provided in this view.'));
-  const docs=el('a','','xStocks documentation');docs.href='https://docs.xstocks.fi/docs/frequently-asked-questions';docs.target='_blank';docs.rel='noopener noreferrer';note.append(docs);body.append(note);
-  body.append(el('p','detail-date','Token market data. Economic exposure to a stock or ETF, without shareholder voting rights.'));
-  const link=el('a','external-link','xStocks on Kraken');link.id='assetExternalLink';link.href='https://www.kraken.com/xstocks';link.target='_blank';link.rel='noopener noreferrer';body.append(link);
-  $('assetDialog').scrollTop=scrollTop;if(restoreFocus)$(restoreFocus)?.focus({preventScroll:true});
+  $('periodCaption').textContent=t('{period} crypto performance · USD',{period:t(periods[state.settings.tf])});
+  renderSources();renderMarketContext();renderSignals();drawMap();renderSelection();
 }
 function renderSelection(){
   $('welcomeCount').textContent=t('{n} of 50 selected',{n:state.selected.size});$('manageCount').textContent=t('{n} / 50 selected',{n:state.selected.size});
   $('finishWelcome').disabled=state.selected.size===0;
 }
 function renderSources(){
-  const list=mapCoins(),hasXstocks=list.some(C.isXstock),hasCrypto=list.some(c=>!C.isXstock(c));
-  const crypto=C.sourceState(state.snapshot,'coingecko_markets'),xstocks=C.sourceState(state.snapshot,'kraken_xstocks');
-  const source=state.view==='xstocks'||(hasXstocks&&!hasCrypto)?xstocks:crypto;
+  const source=C.sourceState(state.snapshot,'coingecko_markets');
   $('marketAge').textContent=source.usable?t('Received {age}',{age:age(source.age)}):t('Market data: {state} · {age}',{state:t(source.kind),age:age(source.age)});
   $('marketAge').classList.toggle('warning',!source.usable);
   $('marketAge').title=t('Snapshot collected {date}',{date:date(source.stamp)});
-  if(hasXstocks&&hasCrypto&&!xstocks.usable)$('mapScope').textContent+=' · '+t('Collection unavailable');
   $('connectionStatus').textContent=t(state.error?'Connection interrupted · retrying':state.loading?'Connecting':'Same-origin data');
   const summary=$('marketSummary');summary.replaceChildren();
   const global=C.sourceState(state.snapshot,'coingecko_global').usable?state.snapshot?.global:null;
   if(global?.cap!=null)summary.append(el('span','',t('Crypto {value}',{value:big(global.cap)})));
   if(global?.btc!=null)summary.append(el('span','',t('BTC dominance {value}%',{value:decimal(global.btc,1)})));
   const box=$('sourceStatus');box.replaceChildren();
-  for(const [key,name] of [['coingecko_markets','CoinGecko · Crypto'],['kraken_xstocks','Kraken · xStocks'],['lunarcrush','LunarCrush'],['fred','FRED']]){
+  for(const [key,name] of [['coingecko_markets','CoinGecko · Crypto'],['lunarcrush','LunarCrush'],['fred','FRED']]){
     const s=C.sourceState(state.snapshot,key),row=el('div','source-row'),heading=el('div','source-heading');
     heading.append(el('b','',name),el('span','source-state '+s.kind,s.kind==='current'?'Collection current':s.kind));
     row.append(heading,el('span','source-time',s.stamp?t('Collected {age}',{age:age(s.age)}):'Collection time unavailable'));
     row.title=t('Collected {date}',{date:date(s.stamp)});
-    if(key==='kraken_xstocks')row.append(el('span','source-observation',t('Kraken · last trades in USD · collected every 30 min')));
     const retry=state.snapshot?.status?.[key]?.retry_at;
     if(!s.usable&&retry)row.append(el('span','source-observation',t('Provider pause · retry after {date}',{date:date(retry)})));
     if(key==='fred'){
@@ -148,12 +96,6 @@ function renderSources(){
 }
 function renderMarketContext(){
   const box=$('marketContext'),m=state.analysis.market;box.replaceChildren();
-  if(state.view==='xstocks'){
-    box.append(el('h3','context-title','xStocks on Kraken'),el('p','xstock-copy','Follow token prices and add xStocks to the same watchlist as your crypto.'));
-    const metrics=el('div','context-metrics');metrics.append(metric('In the feed',String(xstockCoins().length)),metric('Currency','USD'));box.append(metrics);
-    box.append(el('p','context-note','A last trade can be old when no recent exchange took place.'));
-    return;
-  }
   const heading=el('div','context-heading');heading.append(el('h3','','Crypto context'),el('span','',state.settings.tf.toUpperCase()));box.append(heading);
   if(!m.available){box.append(el('p','context-note',state.analysis.current?'Insufficient reference coverage':'Market data is not current'));return;}
   const metrics=el('div','context-metrics');metrics.append(metric('Market median',pct(m.median)),metric('Assets rising',decimal(100*m.up/m.n,1)+'%'));box.append(metrics);
@@ -168,18 +110,10 @@ function renderSignals(){
   for(const c of list)for(const event of eventsFor(c)?.events||[])items.push({c,event});
   items.sort((a,b)=>b.event.score-a.event.score||a.c.id.localeCompare(b.c.id));
   $('signalCount').textContent=items.length;$('panelCount').textContent=items.length;
-  $('signalsPanel').querySelector('.eyebrow').textContent=t(state.view==='xstocks'?'Tokenized markets':state.view==='market'?'In the top 100':'In your watchlist');
-  $('signalsTitle').firstChild.textContent=t(state.view==='xstocks'?'Price tracking':'Signals')+' ';
-  $('panelCount').hidden=state.view==='xstocks';
+  $('signalsPanel').querySelector('.eyebrow').textContent=t(state.view==='market'?'In the top 100':'In your watchlist');
+  $('signalsTitle').firstChild.textContent=t('Signals')+' ';
   $('signalContext').textContent=t('{period} · {n} reference assets',{period:t(periods[state.settings.tf]),n:analysis.price.n});
   const container=$('signalList'),focused=container.contains(document.activeElement)?document.activeElement.dataset.signal:null;container.replaceChildren();
-  const xcount=list.filter(C.isXstock).length,onlyXstocks=state.view==='xstocks'||(list.length&&xcount===list.length);
-  if(onlyXstocks){
-    $('signalContext').textContent=t('Kraken · token market data');
-    container.append(el('h3','empty-title','A separate market'),el('p','empty-description','xStocks are outside the crypto signals. Each quote shows a Kraken trade price and its original date.'),el('p','empty-description','A token provides economic exposure, without shareholder voting rights.'));
-    return;
-  }
-  if(xcount)container.append(el('p','catalog-note',t('{n} xStocks tracked separately from crypto signals',{n:xcount})));
   if(!items.length){
     let title='No active signals',body='No thresholds crossed in this selection.';
     if(!state.snapshot){title='Waiting for market data';body='Signals will appear after a valid snapshot arrives.';}
@@ -202,7 +136,7 @@ function renderSignals(){
   if(state.settings.tf!=='24h')container.append(el('p','empty-description','Price anomalies only. Activity comparisons are available in 24H.'));
   if(focused)container.querySelector(`[data-signal="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
 }
-function filteredCoins(){return mapCoins().filter(c=>!C.isXstock(c)).filter(c=>{
+function filteredCoins(){return mapCoins().filter(c=>{
   if(state.onboarding)return true;
   const p=c[C.TF[state.settings.tf]],r=eventsFor(c);
   return state.settings.filter==='all'||state.settings.filter==='gainers'&&p!=null&&p>0||state.settings.filter==='losers'&&p!=null&&p<0||state.settings.filter==='divergence'&&r?.divergence!=null||state.settings.filter==='anomaly'&&r?.events.some(e=>e.kind!=='divergence');
@@ -221,7 +155,6 @@ function paintMap(){
     let title='A little more focus.',body='Your chosen assets will appear here.';
     if(!state.snapshot){title=state.error?'Market data unavailable':'Loading market data';body=state.error?'We will retry automatically. Your watchlist is kept.':'';}
     else if(state.settings.filter!=='all'&&sourceCoins().length){title='No matching assets';body='Nothing in this selection matches the current filter.';}
-    else if(state.view==='xstocks'){title='xStocks unavailable';body='The xStocks feed is unavailable. Please try again later.';}
     else if(state.selected.size){title='Selected assets unavailable';body='Your selection is kept until these assets return to the feed.';}
     $('mapMessageTitle').textContent=t(title);$('mapMessageBody').textContent=t(body);$('resetFilter').hidden=state.settings.filter==='all';
   }
@@ -229,7 +162,7 @@ function paintMap(){
     paintTile(r);
     const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;
     const p=r.coin[C.TF[state.settings.tf]],events=eventsFor(r.coin)?.events||[];
-    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(C.isXstock(r.coin)?', '+t('Price observed {date}',{date:date(r.coin.last_updated)}):'')+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
+    b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
     b.style.left=r.x+'px';b.style.top=r.y+'px';b.style.width=r.w+'px';b.style.height=r.h+'px';
     b.addEventListener('pointerenter',()=>showTooltip(r));b.addEventListener('pointerleave',hideTooltip);b.addEventListener('focus',()=>showTooltip(r));b.addEventListener('blur',hideTooltip);
     b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b);buttons[(index+delta+buttons.length)%buttons.length]?.focus();}});
@@ -247,11 +180,11 @@ function logo(c){
 function paintTile(r){
   const x=r.x+2,y=r.y+2,w=Math.max(0,r.w-4),h=Math.max(0,r.h-4);
   if(w<1||h<1)return;
-  const c=r.coin,p=c[C.TF[state.settings.tf]],result=eventsFor(c),strength=Math.min(Math.abs(p||0)/12,1),xstock=C.isXstock(c),stale=xstock&&!C.quoteState(state.snapshot,c).usable;
+  const c=r.coin,p=c[C.TF[state.settings.tf]],result=eventsFor(c),strength=Math.min(Math.abs(p||0)/12,1);
   ctx.save();ctx.beginPath();ctx.roundRect(x,y,w,h,Math.min(6,w/2,h/2));ctx.clip();
-  ctx.fillStyle=p==null||stale?'#24282c':p>=0?`hsl(154 40% ${23+strength*13}%)`:`hsl(354 39% ${25+strength*13}%)`;ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=p==null?'#24282c':p>=0?`hsl(154 40% ${23+strength*13}%)`:`hsl(354 39% ${25+strength*13}%)`;ctx.fillRect(x,y,w,h);
   if(result?.events.length){ctx.strokeStyle=result.divergence!=null?'#85d8ed':'#f7d877';ctx.lineWidth=4;ctx.strokeRect(x+1,y+1,w-2,h-2);}
-  const img=logo(c),badge=(xstock||result?.events.length)&&Math.min(w,h)>76?22:0;
+  const img=logo(c),badge=result?.events.length&&Math.min(w,h)>76?22:0;
   const content=C.tileContent(w,h-badge,!!img),text=p==null?'N/A':pct(p);
   let fs=content.font;
   ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
@@ -259,37 +192,25 @@ function paintTile(r){
   const block=content.logo+(img?content.gap:0)+fs,top=y+badge+(h-badge-block)/2;
   if(img&&content.logo>8){ctx.save();ctx.beginPath();ctx.arc(x+w/2,top+content.logo/2,content.logo/2,0,Math.PI*2);ctx.clip();ctx.drawImage(img,x+(w-content.logo)/2,top,content.logo,content.logo);ctx.restore();}
   if(fs>=6){ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(text,x+w/2,top+content.logo+(img?content.gap:0));}
-  if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=xstock?'#d3dee4':result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(xstock?c.symbol.toUpperCase():t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
+  if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
   ctx.restore();
 }
-function showTooltip(r){const node=$('tileTooltip');node.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]])+(C.isXstock(r.coin)?' · '+t('Price observed {date}',{date:date(r.coin.last_updated)}):'');node.hidden=false;node.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-node.offsetWidth-8))+'px';node.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-node.offsetHeight-8))+'px';}
+function showTooltip(r){const node=$('tileTooltip');node.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]]);node.hidden=false;node.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-node.offsetWidth-8))+'px';node.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-node.offsetHeight-8))+'px';}
 function hideTooltip(){$('tileTooltip').hidden=true;}
 function renderChoosers(){
-  for(const prefix of ['welcome','manage']){
-    const control=$(prefix+'Catalog');
-    if(!control.children.length)for(const [value,label] of [['all','All assets'],['crypto','Crypto'],['xstock','xStocks']]){
-      const b=button(label,'',()=>{state.catalog=value;manageLimit=80;renderChoosers();});b.dataset.catalog=value;control.append(b);
-    }
-    for(const b of control.children){b.setAttribute('aria-pressed',String(b.dataset.catalog===state.catalog));b.textContent=t({all:'All assets',crypto:'Crypto',xstock:'xStocks'}[b.dataset.catalog]);}
-    const note=$(prefix+'CatalogNote'),source=C.sourceState(state.snapshot,'kraken_xstocks');
-    note.textContent=t(state.catalog==='xstock'?(source.usable?'Last traded prices · USD':xstockCoins().length?'Collection interrupted · last received quotes shown.':'The xStocks feed is unavailable. Please try again later.'):'Crypto and xStocks, in one watchlist.');
-    note.classList.toggle('limited',state.catalog==='xstock'&&!source.usable);
-  }
   renderChoices('welcomeResults',$('welcomeSearch').value,12,false);renderChoices('manageResults',$('manageSearch').value,manageLimit,$('selectedOnly').checked);renderSelection();
 }
 function renderChoices(target,query,limit,onlySelected){
   const container=$(target),focused=container.contains(document.activeElement)?document.activeElement.dataset.coin:null;
   const q=C.text(query,80).toLowerCase();
   const base=onlySelected?[...state.selected].map(id=>byId(id)||{id,name:id,symbol:'unavailable',current_price:null,has_logo:false}):coins();
-  const matching=base.filter(c=>(state.catalog==='all'||(C.isXstock(c)?'xstock':'crypto')===state.catalog)&&(!q||c.name.toLowerCase().includes(q)||c.symbol.toLowerCase().includes(q)||c.id===q));
+  const matching=base.filter(c=>(!q||c.name.toLowerCase().includes(q)||c.symbol.toLowerCase().includes(q)||c.id===q));
   container.replaceChildren();
   for(const c of matching.slice(0,limit)){
     const selected=state.selected.has(c.id),row=button('', 'coin-choice',()=>toggleCoin(c.id));row.dataset.coin=c.id;row.setAttribute('aria-pressed',String(selected));
     const identity=el('span','coin-identity');identity.append(el('b','',c.name,false),el('small','',c.symbol.toUpperCase(),false));
-    if(C.isXstock(c)){const badge=el('span','asset-badge','xStock');identity.lastChild.append(badge);}
-    const values=el('span','coin-values');values.append(el('span','',price(c.current_price,C.isXstock(c))));
-    if(!C.isXstock(c))values.append(el('small',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
-    if(C.isXstock(c)){const status=C.quoteState(state.snapshot,c);values.append(el('small','muted',t('Last trade {age}',{age:age(status.age)})));values.title=t('Price observed {date}',{date:date(c.last_updated)});}
+    const values=el('span','coin-values');values.append(el('span','',price(c.current_price)));
+    values.append(el('small',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
     row.append(coinImage(c),identity,values,icon(selected?'check':'plus'));row.setAttribute('aria-label',t(selected?'Remove {name}':'Add {name}',{name:c.name}));container.append(row);
   }
   if(!matching.length)container.append(el('p','empty-description',state.loading?'Loading assets...':!state.snapshot?'Market data is unavailable.':onlySelected?'No selected assets match.':'No matching asset in the current feed.'));
@@ -297,7 +218,7 @@ function renderChoices(target,query,limit,onlySelected){
   if(focused)container.querySelector(`[data-coin="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
 }
 function openDialog(id){const d=$(id);d._opener=document.activeElement;if(!d.open)d.showModal();}
-function openAsset(id){const c=byId(id);if(!c)return;hideTooltip();state.activeCoin=id;state.assetTab=C.isXstock(c)?'market':'signals';renderAsset();openDialog('assetDialog');$('assetDialog').scrollTop=0;}
+function openAsset(id){const c=byId(id);if(!c)return;hideTooltip();state.activeCoin=id;state.assetTab='signals';renderAsset();openDialog('assetDialog');$('assetDialog').scrollTop=0;}
 function metric(label,value){const n=el('div','detail-metric');n.append(el('span','',label),el('b','',value));return n;}
 function signalReading(c,kind){
   const result=eventsFor(c),event=result?.events.find(e=>e.kind===kind);
@@ -369,7 +290,6 @@ function renderAsset(){
   const restoreFocus=$('assetContent').contains(document.activeElement)?document.activeElement.id:null;
   const scrollTop=$('assetDialog').scrollTop;
   const c=byId(state.activeCoin);if(!c){$('assetContent').replaceChildren(el('p','', 'This asset is no longer in the current snapshot.'));return;}
-  if(C.isXstock(c)){renderXstockAsset(c,scrollTop,restoreFocus);return;}
   const identity=$('assetIdentity');identity.replaceChildren(coinImage(c));const name=el('div');name.append(el('h2','',c.name,false),el('span','muted',c.symbol.toUpperCase(),false));name.querySelector('h2').id='assetTitle';identity.append(name);
   const body=$('assetContent');body.replaceChildren();
   const head=el('div','asset-price'),quote=el('div','asset-quote');quote.append(el('b','',price(c.current_price)),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])+' · '+t(state.settings.tf.toUpperCase())));
@@ -421,7 +341,7 @@ function updateImportPreview(){
 }
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(d=>{d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close();}});d.addEventListener('close',()=>{if(d.id==='assetDialog')state.activeCoin=null;const opener=d._opener;if(opener?.isConnected)opener.focus();else if(opener?.id)$(opener.id)?.focus();else if(opener?.dataset.tile)$('tileButtons').querySelector(`[data-tile="${CSS.escape(opener.dataset.tile)}"]`)?.focus();else if(opener?.dataset.signal)$('signalList').querySelector(`[data-signal="${CSS.escape(opener.dataset.signal)}"]`)?.focus();});});
-$('manageBtn').addEventListener('click',()=>{manageLimit=80;state.catalog=state.view==='xstocks'?'xstock':'all';renderChoosers();openDialog('manageDialog');$('manageSearch').focus();});
+$('manageBtn').addEventListener('click',()=>{manageLimit=80;renderChoosers();openDialog('manageDialog');$('manageSearch').focus();});
 $('homeLink').addEventListener('click',e=>{e.preventDefault();state.onboarding=true;state.picking=false;state.view='fav';render();});
 $('buildWatchlist').addEventListener('click',()=>{if(state.selected.size){state.onboarding=false;render();$('manageBtn').focus();}else{state.picking=true;render();$('welcomeSearch').focus();}});
 $('exploreMarket').addEventListener('click',()=>{state.onboarding=false;state.view='market';render();document.querySelector('[data-view="market"]').focus();});
@@ -443,7 +363,8 @@ $('fullscreenBtn').addEventListener('click',async()=>{try{if(document.fullscreen
 document.addEventListener('fullscreenchange',()=>{const active=!!document.fullscreenElement,b=$('fullscreenBtn');b.title=t(active?'Exit full screen':'Full screen');b.setAttribute('aria-label',b.title);b.replaceChildren(icon(active?'minimize':'maximize'));drawMap();});
 document.addEventListener('orbit:language',()=>{render();renderChoosers();if($('assetDialog').open)renderAsset();if(pendingImport){$('importSummary').textContent=t('{n} assets in this file. Display preferences will also be restored.',{n:pendingImport.coins.length});updateImportPreview();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-window.addEventListener('storage',e=>{if(e.key===FAV_KEY){const v=readStorage(FAV_KEY,[]);if(Array.isArray(v))state.selected=new Set(v.filter(id=>typeof id==='string'&&C.ID.test(id)).slice(0,50));render();renderChoosers();}});
+window.addEventListener('storage',e=>{if(e.key===FAV_KEY){const v=readStorage(FAV_KEY,[]);if(Array.isArray(v))state.selected=new Set(v.filter(id=>typeof id==='string'&&C.ID.test(id)&&!C.isXstock({id})).slice(0,50));render();renderChoosers();}});
 new ResizeObserver(drawMap).observe($('stage'));
 setInterval(()=>{if(document.hidden)return;render();if($('assetDialog').open)renderAsset();},15000);
+if(Array.isArray(saved)&&saved.some(id=>typeof id==='string'&&C.isXstock({id})))save();
 render();renderChoosers();refresh();

@@ -30,7 +30,7 @@ class ReleaseTests(unittest.TestCase):
         self.old = b'previous builder'
         (self.install / 'build_snapshot.py').write_bytes(self.old)
         for name, source in release.FILES.items():
-            (self.repo / source).write_bytes(('new ' + name).encode())
+            if source: (self.repo / source).write_bytes(('new ' + name).encode())
         for name in release.UNITS:
             (self.repo / 'deploy' / name).write_bytes(('new ' + name).encode())
         for obj, attr, value in [(release, 'UNIT_DIR', self.base / 'units'), (release, 'INSTALL', self.install), (release.front, 'BACKUPS', self.backups), (release.front, 'REPO', self.repo), (release, 'SNAPSHOT', self.base / 'orbit.json')]:
@@ -40,7 +40,10 @@ class ReleaseTests(unittest.TestCase):
 
     def activate_files(self):
         for name, source in release.FILES.items():
-            release.front.atomic_write(self.install / name, (self.repo / source).read_bytes())
+            if source:
+                release.front.atomic_write(self.install / name, (self.repo / source).read_bytes())
+            else:
+                (self.install / name).unlink(missing_ok=True)
 
     def test_backup_restores_builder_and_removes_previously_absent_validator(self):
         backup, record = release.create_backup(REV)
@@ -107,27 +110,27 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(record['front_backup'], 'front-backup')
         self.assertEqual(release.SNAPSHOT.read_bytes(), b'generated data retained')
 
-    def test_snapshot_requires_new_generation_and_independent_current_xstocks(self):
+    def test_snapshot_requires_new_current_crypto_and_rejects_retired_sources(self):
         now = dt.datetime.now(dt.timezone.utc)
         stamp = now.isoformat()
-        data = {'snapshot': stamp, 'coins': [{'asset_type': 'xstock', 'price_source': 'kraken', 'last_updated': stamp}], 'status': {name: {'ok': True, 'fetched_at': stamp} for name in ('coingecko_markets', 'kraken_xstocks')}}
+        data = {'snapshot': stamp, 'coins': [{'id': 'bitcoin', 'asset_type': 'crypto'}],
+                'status': {'coingecko_markets': {'ok': True, 'fetched_at': stamp}}}
         def check(value, start=0):
             release.SNAPSHOT.write_text(json.dumps(value))
             with patch.object(release.subprocess, 'run', return_value=argparse.Namespace(returncode=0)):
                 release.validate_collected(start)
         check(data)
-        with self.assertRaisesRegex(ValueError, 'new snapshot'):
-            check(data, now.timestamp() + 1)
-        data['status']['kraken_xstocks']['ok'] = False
-        with self.assertRaisesRegex(ValueError, 'kraken_xstocks'):
-            check(data)
-        data['status']['kraken_xstocks'] = {'ok': True, 'fetched_at': (now-dt.timedelta(minutes=36)).isoformat()}
-        with self.assertRaisesRegex(ValueError, 'kraken_xstocks'):
-            check(data)
-        data['status']['kraken_xstocks']['fetched_at'] = stamp
-        data['coins'] = [{'asset_type': 'crypto'}]
-        with self.assertRaisesRegex(ValueError, 'No xStocks'):
-            check(data)
+        with self.assertRaisesRegex(ValueError, 'new snapshot'): check(data, now.timestamp() + 1)
+        data['status']['coingecko_markets']['ok'] = False
+        with self.assertRaisesRegex(ValueError, 'coingecko_markets'): check(data)
+        data['status']['coingecko_markets'] = {'ok': True, 'fetched_at': (now-dt.timedelta(minutes=4)).isoformat()}
+        with self.assertRaisesRegex(ValueError, 'coingecko_markets'): check(data)
+        data['status']['coingecko_markets']['fetched_at'] = stamp
+        data['coins'][0]['asset_type'] = 'xstock'
+        with self.assertRaisesRegex(ValueError, 'exclusively crypto'): check(data)
+        data['coins'][0]['asset_type'] = 'crypto'
+        data['status']['kraken_xstocks'] = {'ok': True}
+        with self.assertRaisesRegex(ValueError, 'Retired source'): check(data)
 
     def test_crypto_timer_resumes_only_after_failed_release_has_restored_files(self):
         order = []
@@ -151,17 +154,37 @@ class ReleaseTests(unittest.TestCase):
                     raise ValueError('collection failed')
         ctl.assert_called_once_with('stop', release.TIMER)
 
-    def test_partial_kraken_install_can_restore_without_stopping_missing_units(self):
+    def test_retirement_removes_worker_and_units_and_rollback_restores_them(self):
+        # Construct a valid old installation backup without requiring root in CI.
+        worker = self.install / 'collect_xstocks.py'
+        worker.write_bytes(b'old worker')
         backup, record = release.create_backup(REV)
-        record['kraken_activation_started'] = True
-        self.activate_files()
-        unit = release.UNITS[0]
-        (release.UNIT_DIR / unit).write_bytes((self.repo / 'deploy' / unit).read_bytes())
-        with patch.object(release, 'systemctl') as ctl:
+        for name in release.UNITS:
+            body = ('old ' + name).encode()
+            (release.UNIT_DIR / name).write_bytes(body)
+            (backup / 'units' / name).write_bytes(body)
+            record['units'][name].update(old=release.front.digest(body), enabled=True, active=True)
+        with patch.object(release, 'systemctl') as ctl, patch.object(release, 'property_value', return_value='inactive'):
+            release.retire_kraken(backup, record)
+            self.activate_files()
+            self.assertFalse(worker.exists())
+            for name in release.UNITS: self.assertFalse((release.UNIT_DIR / name).exists())
+            self.assertTrue(json.loads((backup / 'collector.json').read_text())['kraken_activation_started'])
+            self.assertEqual([c.args for c in ctl.call_args_list], [('stop', release.KRAKEN_TIMER), ('disable', release.KRAKEN_TIMER), ('stop', release.KRAKEN_SERVICE), ('daemon-reload',)])
             release.restore_collector(backup, record)
-        self.assertEqual([c.args for c in ctl.call_args_list], [('daemon-reload',), ('stop', unit), ('daemon-reload',)])
-        self.assertEqual((self.install / 'build_snapshot.py').read_bytes(), self.old)
-        self.assertFalse((self.install / 'collect_xstocks.py').exists())
+            self.assertEqual(worker.read_bytes(), b'old worker')
+            for name in release.UNITS: self.assertEqual((release.UNIT_DIR / name).read_bytes(), ('old ' + name).encode())
+            self.assertEqual(ctl.call_args_list[-1].args, ('start', release.KRAKEN_TIMER))
+
+    def test_active_retired_service_blocks_removal(self):
+        backup, record = release.create_backup(REV)
+        record['units'][release.KRAKEN_SERVICE]['old'] = release.front.digest(b'old service')
+        (backup / 'units' / release.KRAKEN_SERVICE).write_bytes(b'old service')
+        (release.UNIT_DIR / release.KRAKEN_SERVICE).write_bytes(b'old service')
+        with patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='active'):
+            with self.assertRaisesRegex(ValueError, 'still running'):
+                release.retire_kraken(backup, record)
+        self.assertTrue((release.UNIT_DIR / release.KRAKEN_SERVICE).exists())
 
     def test_wrong_output_paths_do_not_expose_credentials(self):
         env_file = self.base / 'provider.env'

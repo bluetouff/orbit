@@ -1,28 +1,26 @@
 # Orbit2
 
-Favoris et carte de marché crypto et xStocks, par l0g Lab. Logiciel sous [licence MIT](LICENSE).
+Favoris et carte de marché crypto, par l0g Lab. Logiciel sous [licence MIT](LICENSE).
 
 [English](README.md) · [Application](https://orbit.l0g.fr/) · [Guide utilisateur FR](https://orbit.l0g.fr/docs/) · [User guide EN](https://orbit.l0g.fr/docs/en/)
 
 ## Utilisation
 
-- Jusqu’à 50 favoris mêlant cryptos et xStocks, conservés sur votre appareil.
-- Vues Crypto (jusqu’à 100 actifs) et xStocks (tous les tokens USD collectés sur Kraken), catalogue consultable par nom ou symbole.
+- Jusqu’à 50 favoris crypto, conservés sur votre appareil.
+- Vue Crypto (jusqu’à 100 actifs), catalogue consultable par nom ou symbole.
 - Pour les cryptos : variations sur 1H, 24H, 7D et 30D ; taille des tuiles selon la performance, la capitalisation ou le volume.
 - Fiches de marché, dates des sources et états explicites lorsque les données sont anciennes ou indisponibles.
 - Interface FR/EN, navigation au clavier, import et export JSON locaux.
 
-Les xStocks sont suivis comme des tokens. La vue présente leur dernier prix échangé sur Kraken et sa date, sans le confondre avec le cours du titre sous-jacent. Les variations par période, volumes et capitalisations ne sont pas fournis dans cette vue. Ils sont exclus des statistiques et signaux crypto. La [documentation de l’émetteur](https://docs.xstocks.fi/docs/frequently-asked-questions) précise leur nature de certificats et l’absence de droits de vote d’actionnaire. Orbit ne passe aucun ordre et ne connecte aucun portefeuille.
+Orbit ne passe aucun ordre et ne connecte aucun portefeuille.
 
 ## Architecture et confidentialité
 
-Deux collecteurs Python, limités à la bibliothèque standard, récupèrent les données côté serveur. Des timers systemd indépendants déclenchent les collectes ; Apache sert un instantané JSON commun et des logos locaux. Les visiteurs ne multiplient pas les appels aux fournisseurs.
+Un collecteur Python, limité à la bibliothèque standard, récupère les données côté serveur. Un timer systemd déclenche les collectes ; Apache sert un instantané JSON commun et des logos locaux. Les visiteurs ne multiplient pas les appels aux fournisseurs.
 
 Le navigateur contacte uniquement la même origine. Aucune clé API, police distante, publicité ou bibliothèque tierce n’est nécessaire côté client. Favoris, réglages et langue restent dans le stockage local du navigateur. Les journaux techniques du serveur sont décrits dans les [mentions de confidentialité](https://orbit.l0g.fr/legal/).
 
-CoinGecko conserve la collecte crypto actuelle, avec un cache minimal de 60 secondes. Les xStocks passent par l’[API publique Kraken](https://docs.kraken.com/api-reference/market-data/get-recent-trades), sans clé et sans crédit CoinGecko. Leur collecteur indépendant passe toutes les 30 minutes, à moins d’une requête par seconde. Un cycle prend quelques minutes et ne bloque pas les cryptos. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
-
-Le catalogue xStocks contient les marchés de tokens en USD ayant au moins un échange, dans une limite de 250. Les favoris existants sont conservés lorsque le symbole correspond de façon unique. Le cache privé Kraken reste hors de la racine web ; le navigateur lit uniquement les données publiques validées.
+CoinGecko conserve la collecte crypto actuelle, avec un cache minimal de 60 secondes. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
 
 ## Aperçu local
 
@@ -50,7 +48,7 @@ node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Les suites navigateur utilisent une installation existante de Playwright : `tests/browser.cjs`, `tests/experience-browser.cjs`, `tests/xstocks-browser.cjs` et `tests/docs-browser.cjs`. Démarrer l’aperçu auparavant ; la suite xStocks attend de vraies données de tokens. Les données synthétiques sont réservées aux tests isolés des erreurs et des protections.
+Les suites navigateur utilisent une installation existante de Playwright : `tests/browser.cjs`, `tests/experience-browser.cjs`, `tests/crypto-only-browser.cjs` et `tests/docs-browser.cjs`. Démarrer l’aperçu auparavant. La suite crypto vérifie aussi l’exclusion des anciens tokens. Les données synthétiques sont réservées aux tests isolés des erreurs et des protections.
 
 Avant publication, appliquer les contrôles de [SECURITY.md](SECURITY.md), dont le scan de secrets du répertoire de travail et de l’historique Git complet.
 
@@ -75,6 +73,4 @@ attentes bornées du déploiement et la reprise après restauration.
 
 Les pages crypto sont publiées atomiquement dès leur collecte complète, avant les requêtes sociales, macro et les logos. Une seconde publication complète le contexte sans changer les dates des prix ni de la collecte crypto.
 
-Les xStocks affichent la date réelle du dernier échange. Un échange ancien peut refléter un marché peu actif, même si sa collecte vient de réussir. Une collecte vieille de plus de 35 minutes ou un contrôle individuel vieux de plus de 40 minutes est signalé comme indisponible. Les dates des prix restent intactes. En cas de panne, seuls les derniers prix Kraken déjà reçus peuvent être conservés, avec un état explicite.
-
-Le déploiement installe `orbit-xstocks.service` et son timer indépendant, sans modifier le timer crypto ni le fichier de secrets. Il précharge Kraken pendant que les cryptos continuent de tourner, puis valide la nouvelle collecte avant de publier le front. Le retour arrière inclut les unités Kraken. La vérification prolongée `python3 scripts/verify_collection.py --kraken-renewal` contrôle deux renouvellements crypto et un renouvellement Kraken, en lisant seulement le site public.
+Le déploiement arrête et désactive l’ancien timer Kraken, puis retire son service et son collecteur. La cadence crypto et le fichier de secrets sont conservés. Les anciens tokens sont exclus des données publiées et du navigateur, y compris à partir d’un cache. Les caches privés devenus inutiles restent hors de la racine web et ne sont plus lus. Le retour arrière restaure les fichiers et l’état précédent des unités. Après activation, `python3 scripts/verify_collection.py` vérifie deux renouvellements crypto et l’absence de tokens, en lisant seulement le site public.

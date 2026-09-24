@@ -28,7 +28,7 @@ async function main(){
     await page.goto(origin+'/web/');await page.waitForFunction(()=>state.snapshot);
     await page.screenshot({path:path.join(screenshots,'home.png')});
     assert.equal(await page.locator('#homeIntro').isVisible(),true);
-    assert.equal(await page.locator('#homeFaq details').count(),7);
+    assert.equal(await page.locator('#homeFaq details').count(),6);
     assert.equal(await page.locator('.project-links .support-link').isVisible(),true);
     assert.equal(await page.locator('.tile-hit').count(),6);
     assert.equal(await page.locator('#watchCount').textContent(),'0');

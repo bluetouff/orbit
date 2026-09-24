@@ -43,8 +43,6 @@ GLOBAL_REFRESH_SEC = env_int("ORBIT_GLOBAL_REFRESH_SEC", 120, 30, 3600)
 MARKETS_REFRESH_SEC = env_int("ORBIT_MARKETS_REFRESH_SEC", 60, 60, 180)
 SOCIAL_REFRESH_SEC = env_int("ORBIT_SOCIAL_REFRESH_SEC", 900, 60, 86400)
 MACRO_REFRESH_SEC  = env_int("ORBIT_MACRO_REFRESH_SEC", 3600, 300, 86400)
-XSTOCKS_REFRESH_SEC = 1800  # Independent public Kraken timer; never CoinGecko.
-XSTOCKS_MAX = 250
 TIMEOUT    = env_float("ORBIT_TIMEOUT", 20, 2, 60)
 MAX_BYTES  = env_int("ORBIT_MAX_BYTES", 40 * 1024 * 1024, 1024 * 1024, 80 * 1024 * 1024)
 
@@ -282,6 +280,12 @@ def normalize_social(s):
     return out
 
 
+def is_removed_asset(c):
+    return (c.get('asset_type', 'crypto') != 'crypto' or c.get('price_source') == 'kraken'
+            or bool(re.search(r'(?:^kraken-|xstocks?$)', str(c.get('id', '')), re.I))
+            or bool(re.search(r'\bxstocks?\b', str(c.get('name', '')), re.I)))
+
+
 def normalize_coin(c, social_by_symbol, include_spark):
     if not isinstance(c, dict):
         return None
@@ -290,8 +294,9 @@ def normalize_coin(c, social_by_symbol, include_spark):
     name = bounded_text(c.get("name"), 96)
     if not cid or not sym or not name or cid != c.get("id") or sym != c.get("symbol") or not COIN_ID_RE.fullmatch(cid) or not SYMBOL_RE.fullmatch(sym):
         return None
-    kind = "xstock" if c.get("asset_type") == "xstock" else "crypto"
-    o = {"id": cid, "symbol": sym.lower(), "name": re.sub(r"[\x00-\x1f\x7f]", "", name), "asset_type": kind}
+    if is_removed_asset(c):
+        return None
+    o = {"id": cid, "symbol": sym.lower(), "name": re.sub(r"[\x00-\x1f\x7f]", "", name), "asset_type": "crypto"}
     if not o["name"]:
         return None
     observed = c.get("last_updated")
@@ -304,26 +309,11 @@ def normalize_coin(c, social_by_symbol, include_spark):
             pass
     if observed is not None and "last_updated" not in o:
         return None  # Never turn a malformed observation into an undated quote.
-    if kind == 'xstock' and c.get('price_source') == 'kraken':
-        pair = c.get('market_pair')
-        checked = c.get('fetched_at')
-        if not isinstance(pair, str) or not re.fullmatch(r'[A-Z0-9.]{1,18}xUSD', pair) or not parse_ts(checked):
-            return None
-        o.update(price_source='kraken', market_pair=pair, fetched_at=checked)
-        price = finite_num(c.get('current_price'), lo=0)
-        observed_time = datetime.datetime.fromisoformat(o['last_updated']).timestamp() if 'last_updated' in o else 0
-        checked_time = parse_ts(checked)
-        if not price or observed_time <= 0 or observed_time > checked_time + 60:
-            return None
-        # Kraken trades do not carry compatible returns, caps or volumes.
-        o.update(current_price=price, market_cap=None, total_volume=None)
-        return o
     required = ("current_price", "market_cap", "total_volume")
     for k in required:
         n = finite_num(c.get(k), lo=0)
         if n is None:
-            if kind != "xstock" or k == "current_price":
-                return None
+            return None
         o[k] = n
     for k in ("ath", "circulating_supply"):
         n = finite_num(c.get(k), lo=0)
@@ -336,7 +326,7 @@ def normalize_coin(c, social_by_symbol, include_spark):
               "price_change_percentage_7d_in_currency", "price_change_percentage_30d_in_currency"):
         n = finite_num(c.get(k), lo=-100, hi=100000)
         o[k] = round(n, 6) if n is not None else None
-    s = social_by_symbol.get(sym.upper()) if kind == "crypto" else None
+    s = social_by_symbol.get(sym.upper())
     if s:
         o.update(normalize_social(s))
     if include_spark:
@@ -364,36 +354,6 @@ def get_markets():
             break
         page += 1
     return coins[:TOP]
-
-
-def get_xstocks(previous):
-    """Read the independent Kraken cache; this never makes a network request."""
-    old_status = (previous.get('status') or {}).get('kraken_xstocks') or {}
-    old_coins = [c for c in previous.get('coins', []) if isinstance(c, dict)
-                 and c.get('asset_type') == 'xstock' and c.get('price_source') == 'kraken'][:XSTOCKS_MAX]
-    try:
-        fd = os.open(os.path.join(OUT_DIR, '.kraken-xstocks.json'), os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd) as stream:
-            raw = stream.read(4 * 1024 * 1024 + 1)
-        if len(raw) > 4 * 1024 * 1024:
-            raise ValueError('Kraken cache too large')
-        data = json.loads(raw)
-        rows, status = data['coins'], data['status']
-        if not isinstance(rows, list) or not 1 <= len(rows) <= XSTOCKS_MAX or not isinstance(status, dict):
-            raise ValueError('Invalid Kraken cache')
-        coins, seen = [], set()
-        for row in rows:
-            c = normalize_coin(row, {}, False)
-            if not c or c.get('price_source') != 'kraken' or c['asset_type'] != 'xstock' or c['id'] in seen or 'last_updated' not in c:
-                raise ValueError('Invalid Kraken quote')
-            seen.add(c['id'])
-            coins.append(c)
-        # Only fields owned by this source can cross into the public snapshot.
-        clean = {key: status[key] for key in ('ok', 'attempted_at', 'fetched_at', 'last_success_at', 'error', 'retry_at', 'valid', 'markets', 'untraded') if key in status}
-        clean['ttl'] = XSTOCKS_REFRESH_SEC
-        return coins, [], clean
-    except Exception as error:
-        return old_coins, [], failed_status(old_status, error, XSTOCKS_REFRESH_SEC, old_coins)
 
 
 def get_social():
@@ -478,18 +438,13 @@ def publish_snapshot(snapshot):
 
 def publish_crypto_first(markets, status, previous):
     """Make complete crypto pages available before optional network work."""
-    old_stocks = [c for c in previous.get('coins', [])
-                  if isinstance(c, dict) and c.get('asset_type') == 'xstock' and c.get('price_source') == 'kraken']
-    excluded = {c['id'] for c in old_stocks}
     social = previous_social(previous)
     symbols = Counter((c.get('symbol') or '').upper() for c in markets if isinstance(c, dict))
     social = {symbol: value for symbol, value in social.items() if symbols[symbol] == 1}
     coins, seen = [], set()
     for i, row in enumerate(markets):
         c = normalize_coin(row, social, i < SPARK_TOP)
-        if not c or c['id'] in seen or c['id'] in excluded or c['asset_type'] != 'crypto':
-            continue
-        if re.search(r'xstocks?$', c['id'], re.I) or re.search(r'\bxstocks?\b', c['name'], re.I):
+        if not c or c['id'] in seen or c['asset_type'] != 'crypto':
             continue
         c['has_logo'] = os.path.exists(os.path.join(LOGO_DIR, c['id'] + '.png'))
         seen.add(c['id'])
@@ -497,10 +452,9 @@ def publish_crypto_first(markets, status, previous):
     if not coins:
         return
     status.update(raw=len(markets), valid=len(coins), invalid=len(markets)-len(coins))
-    coins.extend(old_stocks)
     prior_status = previous.get('status') or {}
     source_status = {key: dict(prior_status.get(key) or {'ok': False})
-                     for key in ('kraken_xstocks', 'coingecko_global', 'lunarcrush', 'fred')}
+                     for key in ('coingecko_global', 'lunarcrush', 'fred')}
     source_status['coingecko_markets'] = dict(status)
     publish_snapshot({'snapshot': utc_now(), 'count': len(coins), 'coins': coins,
                       'status': source_status, 'global': previous.get('global'),
@@ -512,7 +466,7 @@ def build():
     os.makedirs(LOGO_DIR, exist_ok=True)
     previous = load_previous()
     prev_status = previous.get("status") or {}
-    old_crypto = [dict(c) for c in previous.get('coins', []) if isinstance(c, dict) and c.get('asset_type', 'crypto') == 'crypto']
+    old_crypto = [dict(c) for c in previous.get('coins', []) if isinstance(c, dict) and not is_removed_asset(c)]
     markets, retained_crypto = [], []
     if old_crypto and not status_due(previous, 'coingecko_markets', MARKETS_REFRESH_SEC):
         retained_crypto = old_crypto
@@ -531,16 +485,8 @@ def build():
     if markets and markets_status.get('ok'):
         publish_crypto_first(markets, markets_status, previous)
 
-    # A crypto failure must not prevent the independent xStocks/social/macro
-    # jobs. CoinGecko's shared cooldown still blocks every CoinGecko request.
-    xstocks, _, xstocks_status = get_xstocks(previous)
-    xstock_ids = {c["id"] for c in xstocks}
-    # Exclude known Kraken tokens and recognizable legacy xStocks from
-    # the crypto feed even if the independent Kraken cache is unavailable.
-    markets = [{**c, "asset_type": "crypto"} for c in markets if isinstance(c, dict)
-               and c.get("id") not in xstock_ids
-               and not re.search(r"xstocks?$", str(c.get("id", "")), re.I)
-               and not re.search(r"\bxstocks?\b", str(c.get("name", "")), re.I)]
+    # Optional context can update independently from crypto market failures.
+    markets = [c for c in markets if isinstance(c, dict) and not is_removed_asset(c)]
 
     if status_due(previous, "lunarcrush", SOCIAL_REFRESH_SEC):
         social, social_status = get_social()
@@ -587,9 +533,7 @@ def build():
         seen_ids.add(o["id"])
         coins.append(o)
     if retained_crypto:
-        coins = [c for c in retained_crypto if c['id'] not in xstock_ids
-                 and not re.search(r'xstocks?$', c['id'], re.I)
-                 and not re.search(r'\bxstocks?\b', c.get('name', ''), re.I)]
+        coins = retained_crypto
         for c in coins:
             for key in ('galaxy_score', 'sentiment', 'social_dominance', 'social_source'):
                 c.pop(key, None)
@@ -598,7 +542,6 @@ def build():
     else:
         markets_status.update(raw=len(markets), valid=len(coins), invalid=invalid)
     crypto_count = len(coins)
-    coins.extend(xstocks)
     if not coins:
         sys.stderr.write("no valid market data; aborting (keeping previous snapshot)\n")
         sys.exit(1)
@@ -631,7 +574,6 @@ def build():
         "social_enabled": bool(LUNAR_KEY),
         "status": {
             "coingecko_markets": markets_status,
-            "kraken_xstocks": xstocks_status,
             "coingecko_global": global_status,
             "lunarcrush": social_status,
             "fred": macro_status,
@@ -640,8 +582,8 @@ def build():
         "coins": coins,
     }
     publish_snapshot(snapshot)
-    health = 'ok' if markets_status.get('ok') and xstocks_status.get('ok') else 'degraded'
-    sys.stderr.write(f"snapshot {health}: {len(coins)} coins, crypto={markets_status.get('error', 'ok')}, xstocks={xstocks_status.get('error', 'ok')}, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
+    health = 'ok' if markets_status.get('ok') else 'degraded'
+    sys.stderr.write(f"snapshot {health}: {len(coins)} coins, crypto={markets_status.get('error', 'ok')}, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
 
 
 if __name__ == "__main__":

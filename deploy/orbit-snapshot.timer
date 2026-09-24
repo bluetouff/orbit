@@ -2,7 +2,7 @@
 Description=Run the Orbit snapshot builder periodically
 
 [Timer]
-# crypto markets about every 30 seconds; slower sources are TTL-cached by the builder
+# wake about every 30 seconds; the builder caches crypto markets for at least 60 seconds
 OnBootSec=45
 OnUnitActiveSec=30
 RandomizedDelaySec=10

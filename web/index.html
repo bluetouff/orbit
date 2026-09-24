@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Orbit2 - crypto & xStocks watchlist</title>
+<title>Orbit2 - crypto watchlist</title>
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self' data:; object-src 'none'; worker-src 'none'; frame-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
 <link rel="icon" href="orbit.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=orbit2-xstocks-1">
-<script src="i18n.js?v=orbit2-xstocks-1" defer></script>
-<script src="core.js?v=orbit2-xstocks-1" defer></script>
-<script src="app.js?v=orbit2-xstocks-1" defer></script>
+<link rel="stylesheet" href="app.css?v=orbit2-crypto-1">
+<script src="i18n.js?v=orbit2-crypto-1" defer></script>
+<script src="core.js?v=orbit2-crypto-1" defer></script>
+<script src="app.js?v=orbit2-crypto-1" defer></script>
 </head>
 <body>
 <div id="shell">
@@ -28,7 +28,7 @@
       </div>
     </div>
     <div class="toolbar" id="toolbar">
-      <div class="segments" id="viewControl" role="group" aria-label="View"><button data-view="fav" aria-pressed="true">Watchlist <span id="watchCount">0</span></button><button data-view="market" aria-pressed="false">Crypto</button><button data-view="xstocks" aria-pressed="false">xStocks</button></div>
+      <div class="segments" id="viewControl" role="group" aria-label="View"><button data-view="fav" aria-pressed="true">Watchlist <span id="watchCount">0</span></button><button data-view="market" aria-pressed="false">Crypto</button></div>
       <div class="segments periods" id="periodControl" aria-label="Performance period"><button data-tf="1h">1H</button><button data-tf="24h">24H</button><button data-tf="7d">7D</button><button data-tf="30d">30D</button></div>
       <label class="select-label">Show<select id="filterSelect"><option value="all">All assets</option><option value="divergence">Divergences</option><option value="anomaly">Anomalies</option><option value="gainers">Gainers</option><option value="losers">Losers</option></select></label>
       <label class="select-label">Size<select id="sizeSelect"><option value="perf">Performance</option><option value="market_cap">Market cap</option><option value="total_volume">Volume</option></select></label>
@@ -37,7 +37,7 @@
   </header>
   <main id="workspace" class="workspace">
     <section id="homeIntro" class="home-intro" aria-labelledby="homeTitle" hidden>
-      <div class="home-identity"><img src="orbit.svg" width="76" height="76" alt=""><div><p class="eyebrow">A l0g Lab project</p><h2 id="homeTitle">Orbit<span>2</span></h2><p class="home-subtitle">Crypto &amp; xStocks. Your market view.</p><p class="home-copy">Your assets. The market around them. A clearer perspective on everyday price moves, unusual activity and the gaps between them.</p></div></div>
+      <div class="home-identity"><img src="orbit.svg" width="76" height="76" alt=""><div><p class="eyebrow">A l0g Lab project</p><h2 id="homeTitle">Orbit<span>2</span></h2><p class="home-subtitle">Crypto. Your market view.</p><p class="home-copy">Your assets. The market around them. A clearer perspective on everyday price moves, unusual activity and the gaps between them.</p></div></div>
       <div class="home-actions"><button id="buildWatchlist" class="primary">Build my watchlist <img class="icon" src="icons/arrow-right.svg" alt=""></button><div><button id="exploreMarket" class="text-button">Explore market</button><button id="introImport" class="text-button">Import watchlist</button></div><p class="local-note">No account. No trackers. Open source.</p></div>
     </section>
     <section id="welcome" class="welcome" aria-labelledby="welcomeTitle" hidden>
@@ -45,22 +45,19 @@
       <h2 id="welcomeTitle">Your watchlist</h2>
       <div class="selection-heading"><span id="welcomeCount">0 of 50 selected</span><button id="homeImport" class="text-button">Import watchlist</button></div>
       <label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="welcomeSearch" type="search" maxlength="80" placeholder="Find an asset" aria-label="Find an asset" autocomplete="off" spellcheck="false"></label>
-      <div id="welcomeCatalog" class="catalog-control" role="group" aria-label="Asset class"></div>
-      <p id="welcomeCatalogNote" class="catalog-note" role="status"></p>
+
       <div id="welcomeResults" class="coin-results"></div>
       <button id="finishWelcome" class="primary" disabled>Open watchlist <img class="icon" src="icons/arrow-right.svg" alt=""></button>
       <p class="local-note">On this device only. No account.</p>
     </section>
     <section class="map-section" aria-label="Asset performance heatmap">
       <div class="map-heading"><div><h2 id="mapTitle">Watchlist</h2><span id="mapSummary"></span></div><span id="marketAge" class="source-age">Waiting for data</span></div>
-      <p id="mapScope" class="map-scope" hidden></p>
       <div id="stage">
         <canvas id="map" aria-hidden="true"></canvas>
         <div id="tileButtons" class="tile-buttons" aria-label="Assets"></div>
         <div id="mapMessage" class="map-message" role="status"><img src="orbit.svg" width="66" height="66" alt=""><h3 id="mapMessageTitle">Loading market data</h3><p id="mapMessageBody"></p><button id="resetFilter" class="secondary" hidden>Show all assets</button></div>
         <div id="tileTooltip" role="tooltip" hidden></div>
       </div>
-      <div id="xstockQuotes" class="xstock-quotes" aria-label="xStocks on Kraken" hidden></div>
       <div class="map-footer"><span id="periodCaption">24-hour performance</span><span class="legend"><span>Down</span><i></i><span>Up</span></span></div>
     </section>
     <aside id="signalsPanel" class="signals-panel" aria-labelledby="signalsTitle">
@@ -73,18 +70,17 @@
     <section id="homeFaq" class="home-faq" aria-labelledby="faqTitle" hidden>
       <h2 id="faqTitle">Frequently asked questions</h2>
       <details><summary>What is a divergence?</summary><p>A gap between an asset's 24-hour price z-score and its trading-activity z-score. An absolute gap above 1.2 is highlighted. It describes a difference, not proof of buying pressure, selling pressure or a future move.</p></details>
-      <details><summary>What makes a move unusual?</summary><p>A price return more than two standard deviations from the reference mean, or unusually high 24-hour volume relative to market cap. The reference includes crypto assets with usable data, not just your favorites. xStocks are excluded.</p></details>
+      <details><summary>What makes a move unusual?</summary><p>A price return more than two standard deviations from the reference mean, or unusually high 24-hour volume relative to market cap. The reference includes crypto assets with usable data, not just your favorites.</p></details>
       <details><summary>How current are the data?</summary><p>The browser checks for a new server snapshot every 30 to 45 seconds while the page is visible. Provider observations can be older. Collection times are shown, and signals are paused when market data exceeds three minutes.</p></details>
       <details><summary>Where are my favorites stored?</summary><p>On this device, in your browser. Up to 50 assets, without an account. Your selection is not sent to the server. A local JSON export is available for backup or transfer.</p></details>
       <details><summary>Where do the data come from?</summary><p>CoinGecko supplies market data. LunarCrush provides separate social context when available; it does not determine the signals. FRED supplies macroeconomic context. Missing data stays unavailable.</p></details>
-      <details><summary>What are xStocks?</summary><p>xStocks are tokenized tracker certificates providing economic exposure to stocks or ETFs, without shareholder voting rights. Orbit shows the last token trade price on Kraken and its original date. This view does not provide period returns, volume or capitalization, and never substitutes the underlying stock price. Trading liquidity and opening hours depend on the venue.</p><p><a href="https://docs.xstocks.fi/docs/frequently-asked-questions" target="_blank" rel="noopener noreferrer">xStocks documentation</a></p></details>
       <details><summary>Is this investment advice?</summary><p>No. These are cross-asset statistical comparisons, not forecasts, trading instructions or risk guarantees. No detected signal does not mean an asset is safe.</p></details>
       <div class="faq-links"><a data-docs="" href="docs/en/">Documentation</a><a href="https://l0g.fr/">Discover l0g</a><a data-support href="https://l0g.fr/en/support/">Support independent work</a><a href="legal/">Legal &amp; privacy</a></div>
     </section>
   </main>
   <footer class="app-footer"><a data-docs="" href="docs/en/">Documentation</a><a href="https://l0g.fr/" rel="noopener">l0g Lab</a><a data-support href="https://l0g.fr/en/support/">Support l0g</a><span>Private by design</span><a href="legal/">Legal &amp; privacy</a><a href="https://github.com/bluetouff/orbit" rel="noopener">Source / MIT</a><span id="connectionStatus" role="status"></span></footer>
 </div>
-<dialog id="manageDialog" aria-labelledby="manageTitle"><div class="dialog-heading"><h2 id="manageTitle">Your assets</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="manageSearch" type="search" maxlength="80" placeholder="Find an asset" aria-label="Search assets" autocomplete="off"></label><div id="manageCatalog" class="catalog-control" role="group" aria-label="Asset class"></div><p id="manageCatalogNote" class="catalog-note" role="status"></p><div class="selection-heading"><span id="manageCount"></span><label class="checkbox-label"><input type="checkbox" id="selectedOnly">Selected only</label></div><div id="manageResults" class="coin-results"></div><button id="moreCoins" class="text-button" hidden>More assets</button><button class="primary" data-close>Done</button></dialog>
+<dialog id="manageDialog" aria-labelledby="manageTitle"><div class="dialog-heading"><h2 id="manageTitle">Your assets</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="manageSearch" type="search" maxlength="80" placeholder="Find an asset" aria-label="Search assets" autocomplete="off"></label><div class="selection-heading"><span id="manageCount"></span><label class="checkbox-label"><input type="checkbox" id="selectedOnly">Selected only</label></div><div id="manageResults" class="coin-results"></div><button id="moreCoins" class="text-button" hidden>More assets</button><button class="primary" data-close>Done</button></dialog>
 <dialog id="assetDialog" aria-labelledby="assetTitle"><div class="dialog-heading"><div id="assetIdentity"></div><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><div id="assetContent"></div></dialog>
 <dialog id="settingsDialog" aria-labelledby="settingsTitle"><div class="dialog-heading"><h2 id="settingsTitle">Watchlist settings</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div><button id="exportBtn" class="setting-command"><img class="icon" src="icons/download.svg" alt=""><span>Export watchlist<small>Assets and display preferences</small></span></button><button id="importBtn" class="setting-command"><img class="icon" src="icons/upload.svg" alt=""><span>Import watchlist<small>From an Orbit2 JSON file</small></span></button><p class="local-note">Your file is read on this device and is never uploaded.</p></dialog>
 <input id="importFile" type="file" accept=".json,application/json" hidden>
@@ -92,7 +88,7 @@
 <dialog id="methodDialog" aria-labelledby="methodTitle">
   <div class="dialog-heading"><h2 id="methodTitle">Signal methodology</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div>
   <div class="prose">
-    <h3>A crypto reference</h3><p>Crypto assets with a valid return in the current market snapshot form the reference, including stablecoins. xStocks are excluded from this reference and from crypto signals. Changing your watchlist or filtering the map does not change this reference. At least 20 valid observations are required.</p>
+    <h3>A crypto reference</h3><p>Crypto assets with a valid return in the current market snapshot form the reference, including stablecoins. Changing your watchlist or filtering the map does not change this reference. At least 20 valid observations are required.</p>
     <h3>Snapshot context</h3><p>The market median is the middle return of the usable reference, not a market-cap-weighted index. Breadth counts rising, unchanged and falling assets over the selected period, with equal weight per asset. Stablecoins and correlated tokens remain included; this is not a sector-matched comparison.</p>
     <h3>Relative comparisons</h3><p>Against BTC: 100 × ((100 + asset return %) / (100 + BTC return %) - 1), for the same period. Against the median: asset return minus median return, in percentage points. These comparisons add context, not independent confirmations or predictions.</p>
     <p>Missing or invalid BTC returns suppress the relative comparison, as does a BTC return of -100%. Supplied observation times must be current and at most one minute apart. Collection-only snapshots remain explicitly labelled: synchronisation cannot be verified without observation times.</p>

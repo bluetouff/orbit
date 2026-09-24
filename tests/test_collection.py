@@ -14,7 +14,7 @@ class CollectionTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name)
         self.clock = [1767225600]
-        for name, value in [('OUT_DIR', str(self.path)), ('LOGO_DIR', str(self.path)), ('LOGO_FETCH_PER_RUN', 0), ('MARKETS_REFRESH_SEC', 60), ('XSTOCKS_REFRESH_SEC', 1800), ('_CG_LAST_REQUEST', None)]:
+        for name, value in [('OUT_DIR', str(self.path)), ('LOGO_DIR', str(self.path)), ('LOGO_FETCH_PER_RUN', 0), ('MARKETS_REFRESH_SEC', 60), ('_CG_LAST_REQUEST', None)]:
             context = patch.object(b, name, value)
             context.start(); self.addCleanup(context.stop)
         for context in [patch.object(b.time, 'time', side_effect=lambda: self.clock[0]), patch.object(b.time, 'sleep'), patch.object(b, 'utc_now', side_effect=lambda: b.datetime.datetime.fromtimestamp(self.clock[0], b.datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')), patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=({'us10y': {'value': 1, 'date': '2026-01-01'}}, {'ok': True, 'fetched_at': '2026-01-01T00:00:00Z'}))]:
@@ -28,9 +28,9 @@ class CollectionTests(unittest.TestCase):
 
     def respond(self, path, params):
         if path == 'global': return {'data': {'total_market_cap': {'usd': 1}}}
-        return [self.stock] if params.get('category') else [self.crypto]
+        return [self.crypto]
 
-    def test_cached_crypto_and_xstocks_preserve_dates_and_reduce_calls(self):
+    def test_cached_crypto_preserves_dates_and_reduces_calls(self):
         with patch.object(b, 'cg', side_effect=self.respond) as request:
             b.build()
             first = self.read()
@@ -40,7 +40,7 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(request.call_count, 2)
             self.assertNotEqual(first['snapshot'], second['snapshot'])
             self.assertEqual(first['coins'], second['coins'])
-            for key in ('coingecko_markets', 'kraken_xstocks'):
+            for key in ('coingecko_markets',):
                 if key == 'coingecko_markets': self.assertTrue(second['status'][key]['reused'])
                 self.assertEqual(first['status'][key]['fetched_at'], second['status'][key]['fetched_at'])
             self.clock[0] += 35
@@ -48,9 +48,8 @@ class CollectionTests(unittest.TestCase):
             third = self.read()
             self.assertEqual(request.call_count, 3)
             self.assertNotEqual(second['status']['coingecko_markets']['fetched_at'], third['status']['coingecko_markets']['fetched_at'])
-            self.assertEqual(second['status']['kraken_xstocks']['fetched_at'], third['status']['kraken_xstocks']['fetched_at'])
 
-    def test_crypto_error_does_not_stop_xstocks_or_macro_and_recovers(self):
+    def test_crypto_error_does_not_stop_macro_and_recovers(self):
         with patch.object(b, 'cg', side_effect=self.respond): b.build()
         old = self.read()
         self.clock[0] += 70
@@ -64,8 +63,6 @@ class CollectionTests(unittest.TestCase):
         self.assertFalse(status['ok']); self.assertEqual(status['http_status'], 503)
         self.assertEqual(status['fetched_at'], old['status']['coingecko_markets']['fetched_at'])
         self.assertEqual(data['coins'][0], old['coins'][0])
-        self.assertTrue(data['status']['kraken_xstocks']['ok'])
-        self.assertEqual(data['status']['kraken_xstocks']['fetched_at'], old['status']['kraken_xstocks']['fetched_at'])
         self.assertTrue(data['status']['fred']['ok'])
         self.assertNotIn('sensitive', json.dumps(data)); self.assertNotIn('private', json.dumps(data))
         self.clock[0] += 70
@@ -119,18 +116,18 @@ class CollectionTests(unittest.TestCase):
         self.crypto['current_price'] = 2
         self.crypto['last_updated'] = b.utc_now()
 
-        def optional_failure(_previous):
+        def optional_failure():
             early = self.read()
             self.assertEqual(early['coins'][0]['current_price'], 2)
             self.assertNotEqual(early['status']['coingecko_markets']['fetched_at'],
                                 previous['status']['coingecko_markets']['fetched_at'])
-            for source in ('kraken_xstocks', 'coingecko_global', 'lunarcrush', 'fred'):
+            for source in ('coingecko_global', 'lunarcrush', 'fred'):
                 self.assertEqual(early['status'][source], previous['status'][source])
-            self.assertEqual(early['coins'][1], previous['coins'][1])
+            self.assertEqual(len(early['coins']), 1)
             # Even an interrupted optional stage leaves the new crypto available.
             raise RuntimeError('isolated test interruption')
 
-        with patch.object(b, 'cg', side_effect=self.respond) as request, patch.object(b, 'get_xstocks', side_effect=optional_failure):
+        with patch.object(b, 'cg', side_effect=self.respond) as request, patch.object(b, 'get_social', side_effect=optional_failure):
             with self.assertRaisesRegex(RuntimeError, 'isolated test interruption'):
                 b.build()
             request.assert_called_once()
@@ -139,11 +136,26 @@ class CollectionTests(unittest.TestCase):
     def test_early_publication_rejects_invalid_duplicates_and_tokenized_assets(self):
         rows = [self.crypto, self.crypto, self.stock, {**coin('other'), 'name': 'Other xStock'},
                 {**coin('invalid'), 'current_price': None}]
-        with patch.object(b, 'get_markets', return_value=rows), patch.object(b, 'get_xstocks', side_effect=RuntimeError):
+        with patch.object(b, 'get_markets', return_value=rows), patch.object(b, 'get_social', side_effect=RuntimeError):
             with self.assertRaises(RuntimeError): b.build()
         data = self.read()
         self.assertEqual([c['id'] for c in data['coins']], ['bitcoin'])
         self.assertFalse(data['status']['fred']['ok'])
+
+    def test_legacy_cache_and_failed_collection_cannot_restore_tokens(self):
+        with patch.object(b, 'cg', side_effect=self.respond): b.build()
+        previous = self.read()
+        previous['coins'].extend([self.stock, {**coin('old-token'), 'name': 'Old xStock'}])
+        previous['status']['kraken_xstocks'] = {'ok': True, 'fetched_at': b.utc_now()}
+        for failed in (False, True):
+            (self.path / 'orbit.json').write_text(json.dumps(previous))
+            self.clock[0] += 70 if failed else 1
+            with patch.object(b, 'cg', side_effect=TimeoutError if failed else self.respond):
+                b.build()
+            data = self.read()
+            self.assertEqual([c['id'] for c in data['coins']], ['bitcoin'])
+            self.assertNotIn('kraken_xstocks', data['status'])
+            self.assertEqual(data['status']['coingecko_markets']['ok'], not failed)
 
 if __name__ == '__main__':
     unittest.main()

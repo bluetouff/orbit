@@ -78,6 +78,14 @@ def validate_macro(m):
     return None
 
 
+def is_crypto(coin):
+    # Reject legacy cached tokens as well as explicit non-crypto instruments.
+    return (isinstance(coin, dict) and coin.get('asset_type', 'crypto') == 'crypto'
+            and coin.get('price_source') != 'kraken'
+            and not re.search(r'(?:^kraken-|xstocks?$)', str(coin.get('id', '')), re.I)
+            and not re.search(r'\bxstocks?\b', str(coin.get('name', '')), re.I))
+
+
 def main(path):
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
@@ -90,10 +98,12 @@ def main(path):
     except ValueError:
         return fail("snapshot timestamp must be UTC ISO-8601")
     coins = d.get("coins")
-    if not isinstance(coins, list) or not coins or len(coins) > 1250:
+    if not isinstance(coins, list) or not coins or len(coins) > 1000:
         return fail("coins must be a non-empty list")
     if d.get("count") != len(coins):
         return fail("count does not match coins length")
+    if any("xstock" in key.lower() for key in d.get("status", {})):
+        return fail("retired source in status")
     err = validate_global(d.get("global"))
     if err:
         return fail(err)
@@ -114,8 +124,8 @@ def main(path):
             return fail(f"{cid} has invalid symbol")
         if not clean_text(name, 96):
             return fail(f"{cid} has invalid name")
-        if c.get("asset_type", "crypto") not in ("crypto", "xstock"):
-            return fail(f"{cid} has invalid asset_type")
+        if not is_crypto(c):
+            return fail(f"{cid} is not a supported crypto asset")
         if c.get("last_updated") is not None:
             observed = c["last_updated"]
             if not clean_text(observed, 40):
@@ -126,23 +136,7 @@ def main(path):
                     return fail(f"{cid} last_updated needs a timezone")
             except ValueError:
                 return fail(f"{cid} has invalid last_updated")
-        if c.get('price_source') == 'kraken':
-            if c.get('asset_type') != 'xstock' or not re.fullmatch(r'[A-Z0-9.]{1,18}xUSD', str(c.get('market_pair', ''))):
-                return fail(f'{cid} has invalid Kraken identity')
-            try:
-                observed = datetime.fromisoformat(c['last_updated'].replace('Z', '+00:00'))
-                checked = datetime.fromisoformat(c['fetched_at'].replace('Z', '+00:00'))
-                if observed.tzinfo is None or checked.tzinfo is None or observed.timestamp() <= 0 or observed.timestamp() > checked.timestamp() + 60:
-                    return fail(f'{cid} has invalid Kraken dates')
-            except (KeyError, TypeError, AttributeError, ValueError):
-                return fail(f'{cid} has invalid Kraken dates')
-            if any(c.get(k) is not None for k in (*PCT_NUMS, *OPTIONAL_NUMS, 'market_cap', 'total_volume', 'market_cap_rank', 'spark')):
-                return fail(f'{cid} mixes unavailable Kraken metrics')
-            if not is_num(c.get('current_price')) or c['current_price'] <= 0:
-                return fail(f'{cid} has invalid Kraken trade price')
         for k in REQUIRED_NUMS:
-            if c.get("asset_type") == "xstock" and k != "current_price" and c.get(k) is None:
-                continue
             if not is_num(c.get(k)) or c[k] < 0:
                 return fail(f"{cid} has invalid {k}")
         for k in OPTIONAL_NUMS:

@@ -103,14 +103,6 @@ class RateLimitTests(unittest.TestCase):
             self.assertIsNone(data['status']['coingecko_markets']['fetched_at'])
             self.assertIn('retry_at', data['status']['coingecko_markets'])
 
-    def test_kraken_cache_read_does_not_call_or_depend_on_coingecko(self):
-        Path(b.rate_limit_path()).write_text(json.dumps({'retry_at': 10**10, 'failures': 2}))
-        with patch.object(b, 'fetch') as request:
-            coins, _, status = b.get_xstocks({})
-            self.assertEqual(coins, [])
-            self.assertFalse(status['ok'])
-            request.assert_not_called()
-
     def test_invalid_and_symlinked_transport_state_fail_before_network(self):
         file = Path(b.rate_limit_path())
         invalid = ['[]', '{}', '{bad', 'x' * 4097, json.dumps({'retry_at': True, 'failures': 1}), json.dumps({'retry_at': 1, 'failures': 100}), json.dumps({'retry_at': -1, 'failures': 0})]
@@ -132,7 +124,7 @@ class RateLimitTests(unittest.TestCase):
 
     def test_completed_recovery_resets_backoff(self):
         Path(b.rate_limit_path()).write_text(json.dumps({'retry_at': 1000, 'failures': 3}))
-        with patch.object(b, 'LOGO_DIR', str(self.directory)), patch.object(b, 'load_previous', return_value={}), patch.object(b, 'get_markets', return_value=[coin()]), patch.object(b, 'get_xstocks', return_value=([], [], {'ok': True})), patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=(None, {'ok': False})), patch.object(b, 'cg', return_value={'data': {'test': 1}}), patch.object(b, 'cache_logo', return_value=False):
+        with patch.object(b, 'LOGO_DIR', str(self.directory)), patch.object(b, 'load_previous', return_value={}), patch.object(b, 'get_markets', return_value=[coin()]), patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=(None, {'ok': False})), patch.object(b, 'cg', return_value={'data': {'test': 1}}), patch.object(b, 'cache_logo', return_value=False):
             b.build()
         self.assertFalse(Path(b.rate_limit_path()).exists())
 
