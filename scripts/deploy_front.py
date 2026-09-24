@@ -276,7 +276,7 @@ def verify_pages(pages):
             raise ValueError(f'Public verification failed for {name}')
 
 
-def run(args):
+def run(args, on_backup=None):
     if args.rollback:
         if os.geteuid() != 0 or Path(args.rollback).name != args.rollback:
             raise ValueError('Rollback requires root and a backup directory name, not a path')
@@ -302,6 +302,8 @@ def run(args):
     if os.geteuid() != 0:
         raise ValueError('--apply requires sudo')
     backup = prepare(WEB_ROOT, BACKUPS, args.revision, assets, pages)
+    if on_backup is not None:
+        on_backup(backup)
     print(f'Rollback: sudo python3 scripts/deploy_front.py --rollback {backup.name}', flush=True)
     # Verify immutable assets over HTTPS before either entry page can reference them.
     for name, expected in assets.items():

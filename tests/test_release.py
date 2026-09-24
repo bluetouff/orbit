@@ -94,7 +94,12 @@ class ReleaseTests(unittest.TestCase):
     def test_success_records_both_backups_and_preserves_generated_snapshot(self):
         release.SNAPSHOT.write_bytes(b'generated data retained')
         args = argparse.Namespace(revision=REV, apply=True, rollback=None)
-        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', return_value=self.backups / 'front-backup'):
+        def activate_front(args, on_backup):
+            on_backup(self.backups / 'front-backup')
+            # The recovery manifest is durable before frontend activation begins.
+            saved = json.loads(next(self.backups.glob('collector-*/collector.json')).read_text())
+            self.assertEqual(saved['front_backup'], 'front-backup')
+        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', side_effect=activate_front):
             release.run(args)
         record = json.loads(next(self.backups.glob('collector-*/collector.json')).read_text())
         self.assertEqual(record['front_backup'], 'front-backup')

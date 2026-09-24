@@ -202,9 +202,11 @@ def run(args):
                 front.atomic_write(installed(name), (front.REPO / source).read_bytes())
             systemctl('start', SERVICE)
             validate_collected(started)
-            front_backup = front.run(argparse.Namespace(revision=args.revision, apply=True, rollback=None))
-            record['front_backup'] = front_backup.name
-            save_record(backup, record)
+            def remember_front(front_backup):
+                # Persist the full recovery path before either HTML page changes.
+                record['front_backup'] = front_backup.name
+                save_record(backup, record)
+            front.run(argparse.Namespace(revision=args.revision, apply=True, rollback=None), on_backup=remember_front)
         except BaseException:
             if record.get('front_backup'):
                 front.run(argparse.Namespace(revision=None, apply=False, rollback=record['front_backup']))

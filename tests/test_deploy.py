@@ -170,9 +170,15 @@ class DeployTests(unittest.TestCase):
 
     def test_asset_failure_prevents_activation(self):
         args = argparse.Namespace(revision=REV, apply=True, rollback=None)
+        recorded = []
+        def record_backup(backup):
+            self.assert_old()
+            self.assertTrue((backup / 'manifest.json').is_file())
+            recorded.append(backup)
         with patch.object(d, 'WEB_ROOT', self.root), patch.object(d, 'BACKUPS', self.backups), patch.object(d, 'git', side_effect=[REV, '']), patch.object(d, 'payload', return_value=(self.assets, self.pages)), patch.object(d, 'preflight'), patch.object(d.os, 'geteuid', return_value=0), patch.object(d, 'public', return_value=(b'wrong asset', {})):
             with self.assertRaisesRegex(ValueError, 'Asset verification failed'):
-                d.run(args)
+                d.run(args, on_backup=record_backup)
+        self.assertEqual(len(recorded), 1)
         self.assert_old()
 
     def test_wrong_checkout_is_refused_before_any_public_request(self):
