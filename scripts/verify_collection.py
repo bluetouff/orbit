@@ -28,7 +28,10 @@ def inspect(data, now):
             raise CollectionError(f'{key}: collection unavailable')
         stamp = timestamp(status.get('fetched_at'))
         age = now - stamp
-        if not -60 <= age <= 180:
+        ttl = status.get('ttl', 60)
+        ttl = ttl if type(ttl) is int else 60
+        maximum = min(180, max(60, ttl)) + 120 if key == 'coingecko_xstocks' else 180
+        if not -60 <= age <= maximum:
             raise CollectionError(f'{key}: collection age {age:.0f}s exceeds the release check')
         result[key] = stamp
     stocks = [c for c in data.get('coins', []) if c.get('asset_type') == 'xstock'][:50]
@@ -47,7 +50,7 @@ def inspect(data, now):
     return result, len(dated), len(stocks)
 
 
-def verify(timeout=300, interval=30):
+def verify(timeout=600, interval=30):
     deadline = time.monotonic() + timeout
     previous, advances = {}, {'coingecko_markets': 0, 'coingecko_xstocks': 0}
     while True:
@@ -66,7 +69,7 @@ def verify(timeout=300, interval=30):
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise CollectionError('Both market feeds did not renew twice within five minutes')
+            raise CollectionError('Both market feeds did not renew twice within the observation window')
         time.sleep(min(interval, remaining))
 
 

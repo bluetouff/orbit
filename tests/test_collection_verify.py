@@ -22,6 +22,13 @@ def snapshot(offset=0):
 
 
 class VerifyTests(unittest.TestCase):
+    def test_existing_xstocks_interval_is_respected_but_cannot_disable_expiry(self):
+        data = snapshot()
+        data['status']['coingecko_xstocks'].update(ttl=180, fetched_at=snapshot(-240)['snapshot'])
+        verify.inspect(data, NOW)
+        data['status']['coingecko_xstocks'].update(ttl=86400, fetched_at=snapshot(-301)['snapshot'])
+        with self.assertRaises(verify.CollectionError): verify.inspect(data, NOW)
+
     def test_recent_file_cannot_hide_failed_or_old_sources_or_undated_quotes(self):
         verify.inspect(snapshot(), NOW)
         for change in ('failed', 'stale', 'unknown', 'old_quote', 'future_quote'):

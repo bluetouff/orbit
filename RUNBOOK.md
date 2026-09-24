@@ -299,7 +299,7 @@ source status, mixed favorites, FR/EN navigation, mobile layout, CSP, no cookies
 and no third-party browser requests. The guide pages require no JavaScript.
 
 After activation, prove that both feeds actually renew twice (read-only HTTPS,
-at most five minutes, no provider API requests):
+up to ten minutes to accommodate existing interval overrides, no provider API requests):
 
 ```bash
 python3 scripts/verify_collection.py
