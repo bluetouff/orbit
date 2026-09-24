@@ -12,6 +12,7 @@ for logos, per-response size cap, timeouts, atomic writes.
 """
 import calendar, datetime, json, math, os, re, ssl, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter
+from itertools import zip_longest
 
 
 def env_int(name, default, lo, hi):
@@ -40,6 +41,8 @@ LOGO_FETCH_PER_RUN = env_int("ORBIT_LOGO_FETCH_PER_RUN", 60, 0, 250)
 GLOBAL_REFRESH_SEC = env_int("ORBIT_GLOBAL_REFRESH_SEC", 120, 30, 3600)
 SOCIAL_REFRESH_SEC = env_int("ORBIT_SOCIAL_REFRESH_SEC", 900, 60, 86400)
 MACRO_REFRESH_SEC  = env_int("ORBIT_MACRO_REFRESH_SEC", 3600, 300, 86400)
+XSTOCKS_REFRESH_SEC = env_int("ORBIT_XSTOCKS_REFRESH_SEC", 120, 60, 180)
+XSTOCKS_MAX = 250  # One bounded category request, independent of visitor traffic.
 TIMEOUT    = env_float("ORBIT_TIMEOUT", 20, 2, 60)
 MAX_BYTES  = env_int("ORBIT_MAX_BYTES", 40 * 1024 * 1024, 1024 * 1024, 80 * 1024 * 1024)
 
@@ -96,7 +99,7 @@ def load_previous():
 def status_due(prev, key, ttl):
     st = ((prev.get("status") or {}).get(key) or {})
     fetched = parse_ts(st.get("fetched_at"))
-    return not fetched or (time.time() - fetched) >= ttl
+    return not fetched or fetched > time.time() or (time.time() - fetched) >= ttl
 
 
 def mark_reused(status, ttl):
@@ -135,9 +138,7 @@ def fetch(url, headers=None, binary=False):
 
 
 def cg(path, params):
-    if CG_KEY and CG_TIER == "demo":
-        params = {**params, "x_cg_demo_api_key": CG_KEY}
-    headers = {"x-cg-pro-api-key": CG_KEY} if (CG_KEY and CG_TIER == "pro") else None
+    headers = {f"x-cg-{CG_TIER}-api-key": CG_KEY} if CG_KEY and CG_TIER in ("demo", "pro") else None
     return fetch(f"{CG_BASE}/{path}?{urllib.parse.urlencode(params)}", headers=headers)
 
 
@@ -186,12 +187,17 @@ def normalize_social(s):
 
 
 def normalize_coin(c, social_by_symbol, include_spark):
+    if not isinstance(c, dict):
+        return None
     cid = bounded_text(c.get("id"), 80)
     sym = bounded_text(c.get("symbol"), 20)
     name = bounded_text(c.get("name"), 96)
-    if not cid or not sym or not name or not COIN_ID_RE.match(cid) or not SYMBOL_RE.match(sym):
+    if not cid or not sym or not name or cid != c.get("id") or sym != c.get("symbol") or not COIN_ID_RE.fullmatch(cid) or not SYMBOL_RE.fullmatch(sym):
         return None
-    o = {"id": cid, "symbol": sym.lower(), "name": name}
+    kind = "xstock" if c.get("asset_type") == "xstock" else "crypto"
+    o = {"id": cid, "symbol": sym.lower(), "name": re.sub(r"[\x00-\x1f\x7f]", "", name), "asset_type": kind}
+    if not o["name"]:
+        return None
     observed = c.get("last_updated")
     if isinstance(observed, str) and len(observed) <= 40:
         try:
@@ -200,11 +206,14 @@ def normalize_coin(c, social_by_symbol, include_spark):
                 o["last_updated"] = stamp.isoformat()
         except ValueError:
             pass
+    if observed is not None and "last_updated" not in o:
+        return None  # Never turn a malformed observation into an undated quote.
     required = ("current_price", "market_cap", "total_volume")
     for k in required:
         n = finite_num(c.get(k), lo=0)
         if n is None:
-            return None
+            if kind != "xstock" or k == "current_price":
+                return None
         o[k] = n
     for k in ("ath", "circulating_supply"):
         n = finite_num(c.get(k), lo=0)
@@ -217,11 +226,13 @@ def normalize_coin(c, social_by_symbol, include_spark):
               "price_change_percentage_7d_in_currency", "price_change_percentage_30d_in_currency"):
         n = finite_num(c.get(k), lo=-100, hi=100000)
         o[k] = round(n, 6) if n is not None else None
-    s = social_by_symbol.get(sym.upper())
+    s = social_by_symbol.get(sym.upper()) if kind == "crypto" else None
     if s:
         o.update(normalize_social(s))
     if include_spark:
-        sp = (c.get("sparkline_in_7d") or {}).get("price")
+        source = c.get("sparkline_in_7d")
+        sp = source.get("price") if isinstance(source, dict) else None
+        sp = sp[:10000] if isinstance(sp, list) else []
         vals = [x for x in (finite_num(p, lo=0) for p in (sp or [])) if x is not None]
         if len(vals) >= 2:
             o["spark"] = downsample(vals, SPARK_PTS)
@@ -234,6 +245,8 @@ def get_markets():
         batch = cg("coins/markets", {
             "vs_currency": "usd", "order": "market_cap_desc", "per_page": per, "page": page,
             "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
+        if not isinstance(batch, list) or len(batch) > per:
+            raise ValueError("invalid market response")
         if not batch:
             break
         coins.extend(batch)
@@ -241,6 +254,37 @@ def get_markets():
             break
         page += 1
     return coins[:TOP]
+
+
+def get_xstocks(previous):
+    """A separate, bounded feed. Reuse real observations without redating them."""
+    old_status = (previous.get("status") or {}).get("coingecko_xstocks") or {}
+    old_coins = [c for c in previous.get("coins", []) if isinstance(c, dict) and c.get("asset_type") == "xstock"][:XSTOCKS_MAX]
+    if not status_due(previous, "coingecko_xstocks", XSTOCKS_REFRESH_SEC):
+        return old_coins, [], mark_reused(old_status, XSTOCKS_REFRESH_SEC)
+    try:
+        rows = cg("coins/markets", {"vs_currency": "usd", "category": "xstocks-ecosystem",
+            "order": "market_cap_desc", "per_page": XSTOCKS_MAX, "page": 1,
+            "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
+        if not isinstance(rows, list) or not rows or len(rows) > XSTOCKS_MAX:
+            raise ValueError("invalid xStocks response")
+        coins, seen = [], set()
+        for row in rows:
+            coin = normalize_coin({**row, "asset_type": "xstock"}, {}, True) if isinstance(row, dict) else None
+            if coin and coin["id"] not in seen:
+                coins.append(coin)
+                seen.add(coin["id"])
+        if not coins:
+            raise ValueError("no valid xStocks")
+        stamp = utc_now()
+        return coins, [r for r in rows if isinstance(r, dict) and r.get("id") in seen], {
+            "ok": True, "fetched_at": stamp, "last_success_at": stamp, "ttl": XSTOCKS_REFRESH_SEC,
+            "valid": len(coins), "invalid": len(rows) - len(coins), "capped": len(rows) == XSTOCKS_MAX}
+    except Exception as error:
+        # Class only: never publish URLs, credentials or upstream response bodies.
+        return old_coins, [], {"ok": False, "error": type(error).__name__, "fetched_at": utc_now(),
+            "last_success_at": old_status.get("last_success_at") or (old_status.get("fetched_at") if old_status.get("ok") else None),
+            "reused": bool(old_coins), "ttl": XSTOCKS_REFRESH_SEC}
 
 
 def get_social():
@@ -291,14 +335,14 @@ def cache_logo(coin):
     """Download the coin logo once into LOGO_DIR/<id>.png (host-allowlisted)."""
     url = coin.get("image") or ""
     cid = coin.get("id") or ""
-    if not url or not cid or not COIN_ID_RE.match(cid):
+    if not isinstance(url, str) or not isinstance(cid, str) or not url or not COIN_ID_RE.fullmatch(cid):
         return False
     dest = os.path.join(LOGO_DIR, cid + ".png")
     if os.path.exists(dest):
         return False
     try:
-        host = urllib.parse.urlparse(url).hostname or ""
-        if host not in LOGO_HOSTS:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in LOGO_HOSTS or parsed.username or parsed.password or parsed.port not in (None, 443):
             return False
         body = fetch(url.split("?")[0], binary=True)
         if len(body) > 2_000_000:
@@ -325,6 +369,14 @@ def build():
         sys.exit(1)
 
     prev_status = previous.get("status") or {}
+    xstocks, xstock_logos, xstocks_status = get_xstocks(previous)
+    xstock_ids = {c["id"] for c in xstocks}
+    # Category membership is authoritative. Exclude recognizable xStocks from
+    # the crypto feed even if category discovery is temporarily unavailable.
+    markets = [{**c, "asset_type": "crypto"} for c in markets if isinstance(c, dict)
+               and c.get("id") not in xstock_ids
+               and not re.search(r"xstocks?$", str(c.get("id", "")), re.I)
+               and not re.search(r"\bxstocks?\b", str(c.get("name", "")), re.I)]
 
     if status_due(previous, "lunarcrush", SOCIAL_REFRESH_SEC):
         social, social_status = get_social()
@@ -371,14 +423,21 @@ def build():
             continue
         seen_ids.add(o["id"])
         coins.append(o)
+    crypto_count = len(coins)
+    coins.extend(xstocks)
     if not coins:
         sys.stderr.write("no valid market data; aborting (keeping previous snapshot)\n")
         sys.exit(1)
 
-    logo_fetches = 0
-    for c in markets[:LOGO_MAX]:
-        if logo_fetches >= LOGO_FETCH_PER_RUN:
+    logo_fetches, logo_attempts = 0, 0
+    logo_candidates = [c for pair in zip_longest(xstock_logos, markets[:LOGO_MAX]) for c in pair if c is not None]
+    for c in logo_candidates:
+        if logo_attempts >= LOGO_FETCH_PER_RUN:
             break
+        cid = c.get("id")
+        if not isinstance(cid, str) or not COIN_ID_RE.fullmatch(cid) or os.path.exists(os.path.join(LOGO_DIR, cid + ".png")):
+            continue
+        logo_attempts += 1
         if cache_logo(c):
             logo_fetches += 1
     for c in coins:
@@ -391,12 +450,13 @@ def build():
         "macro": macro,
         "social_enabled": bool(LUNAR_KEY),
         "status": {
-            "coingecko_markets": {"ok": True, "raw": len(markets), "valid": len(coins),
+            "coingecko_markets": {"ok": bool(crypto_count), "raw": len(markets), "valid": crypto_count,
                                   "invalid": invalid, "fetched_at": markets_fetched_at},
+            "coingecko_xstocks": xstocks_status,
             "coingecko_global": global_status,
             "lunarcrush": social_status,
             "fred": macro_status,
-            "logos": {"fetched": logo_fetches, "limit": LOGO_FETCH_PER_RUN},
+            "logos": {"fetched": logo_fetches, "attempted": logo_attempts, "limit": LOGO_FETCH_PER_RUN},
         },
         "coins": coins,
     }

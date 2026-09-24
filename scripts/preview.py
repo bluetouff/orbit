@@ -28,7 +28,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class PublicCache:
-    def __init__(self):
+    def __init__(self, snapshot_file=None, logo_dir=None):
+        self.snapshot_file = snapshot_file
+        self.logo_dir = logo_dir
         self.lock = threading.Lock()
         self.snapshot_lock = threading.Lock()
         self.downloads = threading.BoundedSemaphore(6)
@@ -47,6 +49,15 @@ class PublicCache:
 
     def get(self, path):
         if path == "/data.json":
+            if self.snapshot_file:
+                try:
+                    with self.snapshot_file.open("rb") as file:
+                        raw = file.read(6_000_001)
+                    if len(raw) > 6_000_000 or not isinstance(json.loads(raw).get("coins"), list):
+                        raise ValueError("Invalid snapshot")
+                    return raw, "application/json"
+                except (OSError, ValueError, AttributeError):
+                    return None, "application/json"
             with self.snapshot_lock:
                 if time.monotonic() - self.attempted > 30:
                     self.attempted = time.monotonic()
@@ -59,6 +70,12 @@ class PublicCache:
                         pass
                 return self.snapshot, "application/json"
         if re.fullmatch(r"/logos/[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}\.png", path):
+            if self.logo_dir:
+                file = (self.logo_dir / path.rsplit("/", 1)[-1]).resolve()
+                if file.is_relative_to(self.logo_dir) and file.is_file():
+                    with file.open("rb") as stream:
+                        raw = stream.read(2_000_001)
+                    return (raw if len(raw) <= 2_000_000 else None), "image/png"
             with self.downloads:
                 with self.lock:
                     if path in self.logos:
@@ -133,8 +150,11 @@ class PreviewServer(http.server.ThreadingHTTPServer):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--snapshot", type=Path, help="Read a real local snapshot instead of the public feed")
+    parser.add_argument("--logos", type=Path, help="Directory of local provider logos")
     args = parser.parse_args()
+    Handler.cache = PublicCache(args.snapshot.resolve() if args.snapshot else None, args.logos.resolve() if args.logos else None)
     server = PreviewServer(("127.0.0.1", args.port), Handler)
     print(f"Orbit2 preview: http://127.0.0.1:{server.server_port}/web/", flush=True)
-    print("Data: public orbit.l0g.fr snapshot, cached for 30s. No direct provider requests.", flush=True)
+    print("Data: local snapshot; original timestamps preserved." if args.snapshot else "Data: public orbit.l0g.fr snapshot, cached for 30s. No direct provider requests.", flush=True)
     server.serve_forever()

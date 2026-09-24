@@ -28,7 +28,7 @@ async function main(){
     await page.goto(origin+'/web/');await page.waitForFunction(()=>state.snapshot);
     await page.screenshot({path:path.join(screenshots,'home.png')});
     assert.equal(await page.locator('#homeIntro').isVisible(),true);
-    assert.equal(await page.locator('#homeFaq details').count(),6);
+    assert.equal(await page.locator('#homeFaq details').count(),7);
     assert.equal(await page.locator('.project-links .support-link').isVisible(),true);
     assert.equal(await page.locator('.tile-hit').count(),6);
     assert.equal(await page.locator('#watchCount').textContent(),'0');
@@ -80,7 +80,7 @@ async function main(){
     const download=await downloaded,exported=JSON.parse(await fs.readFile(await download.path(),'utf8'));
     assert.equal(exported.coins.length,6);
     await page.locator('#importFile').setInputFiles({name:'bad.json',mimeType:'application/json',buffer:Buffer.from('{"version":1,"coins":["../secret"]}')});
-    await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('Invalid coin'));
+    await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('Invalid asset'));
     assert.equal(await page.locator('#watchCount').textContent(),'6');
     await page.locator('#importFile').setInputFiles({name:'watchlist.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({version:1,coins:['bitcoin','ethereum'],settings:{tf:'24h'}}))});
     await page.waitForFunction(()=>document.getElementById('importDialog').open);

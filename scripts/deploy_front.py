@@ -20,13 +20,15 @@ import shutil
 import subprocess
 import tempfile
 import urllib.parse
+import urllib.error
 import urllib.request
 
 REPO = Path(__file__).resolve().parents[1]
 WEB_ROOT = Path('/var/www/html/orbit')
 BACKUPS = Path('/var/backups/orbit')
 ORIGIN = 'https://orbit.l0g.fr'
-PAGES = ('index.html', 'legal/index.html')
+LEGACY_PAGES = ('index.html', 'legal/index.html')
+PAGES = (*LEGACY_PAGES, 'docs/index.html', 'docs/en/index.html')
 SHA = re.compile(r'[0-9a-f]{40}')
 
 
@@ -148,12 +150,34 @@ def target(root, name):
     return file
 
 
+def page_url(name):
+    return '/' + name.removesuffix('index.html')
+
+
+def page_body(root, name):
+    file = target(root, name)
+    return file.read_bytes() if file.exists() else None
+
+
+def body_hash(body):
+    return digest(body) if body is not None else None
+
+
 def preflight(root):
     if root.is_symlink() or not root.is_dir() or root.resolve() != root.absolute():
         raise ValueError('Expected a real existing web-root directory')
     for name in PAGES:
-        served, headers = public('/' if name == 'index.html' else '/legal/')
-        if served != target(root, name).read_bytes():
+        old = page_body(root, name)
+        if old is None and name in LEGACY_PAGES:
+            raise ValueError(f'Missing existing entry page: {name}')
+        try:
+            served, headers = public(page_url(name))
+        except urllib.error.HTTPError as error:
+            if error.code == 404 and old is None:
+                error.close()
+                continue
+            raise
+        if served != old:
             raise ValueError(f'Public {name} does not match this web root; aborting')
         csp = headers.get('Content-Security-Policy', '')
         for directive in ("script-src 'self'", "connect-src 'self'", "frame-ancestors 'none'"):
@@ -202,40 +226,52 @@ def prepare(root, backups, revision, assets, pages):
     backup = Path(tempfile.mkdtemp(prefix=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + revision[:12] + '-', dir=backups))
     record = {'revision': revision, 'pages': {}}
     for name, body in pages.items():
-        old = target(root, name).read_bytes()
-        saved = backup / name
-        saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        saved.write_bytes(old)
-        record['pages'][name] = {'old': digest(old), 'new': digest(body)}
+        old = page_body(root, name)
+        if old is not None:
+            saved = backup / name
+            saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            saved.write_bytes(old)
+        record['pages'][name] = {'old': body_hash(old), 'new': digest(body)}
     (backup / 'manifest.json').write_text(json.dumps(record, indent=2) + '\n')
     return backup
 
 
 def restore(root, backup):
     record = json.loads((backup / 'manifest.json').read_text())
-    if set(record['pages']) != set(PAGES):
+    if set(record['pages']) not in (set(PAGES), set(LEGACY_PAGES)):
         raise ValueError('Unexpected rollback manifest')
-    for name in PAGES:
+    for name in record['pages']:
         hashes = record['pages'][name]
-        if digest(target(root, name).read_bytes()) not in (hashes['old'], hashes['new']):
+        if body_hash(page_body(root, name)) not in (hashes['old'], hashes['new']):
             raise ValueError('A newer or modified front exists; refusing to overwrite it')
-        if digest((backup / name).read_bytes()) != hashes['old']:
+        if hashes['old'] is not None and digest((backup / name).read_bytes()) != hashes['old']:
             raise ValueError('Rollback backup failed its integrity check')
-    for name in PAGES:
-        atomic_write(target(root, name), (backup / name).read_bytes())
+    for name in record['pages']:
+        if record['pages'][name]['old'] is None:
+            target(root, name).unlink(missing_ok=True)
+        else:
+            atomic_write(target(root, name), (backup / name).read_bytes())
 
 
 def activate(root, backup, pages):
     record = json.loads((backup / 'manifest.json').read_text())
     for name in reversed(PAGES):
-        if digest(target(root, name).read_bytes()) != record['pages'][name]['old']:
+        file = target(root, name)
+        if body_hash(page_body(root, name)) != record['pages'][name]['old']:
             raise ValueError('Front changed during deployment')
-        atomic_write(target(root, name), pages[name])
+        file.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        atomic_write(file, pages[name])
 
 
 def verify_pages(pages):
     for name, expected in pages.items():
-        actual, _ = public('/' if name == 'index.html' else '/legal/')
+        try:
+            actual, _ = public(page_url(name))
+        except urllib.error.HTTPError as error:
+            if error.code == 404 and expected is None:
+                error.close()
+                continue
+            raise
         if actual != expected:
             raise ValueError(f'Public verification failed for {name}')
 
@@ -248,7 +284,9 @@ def run(args):
         if backup.is_symlink() or backup.resolve().parent != BACKUPS.resolve():
             raise ValueError('Invalid backup path')
         restore(WEB_ROOT, backup)
-        verify_pages({name: (backup / name).read_bytes() for name in PAGES})
+        record = json.loads((backup / 'manifest.json').read_text())
+        verify_pages({name: (backup / name).read_bytes() if hashes['old'] is not None else None
+                      for name, hashes in record['pages'].items()})
         print('Previous front restored and publicly verified. Versioned assets retained.')
         return
     if not args.revision or not SHA.fullmatch(args.revision) or git('rev-parse', 'HEAD') != args.revision:
@@ -257,7 +295,7 @@ def run(args):
         raise ValueError('Checkout must be clean before deployment')
     assets, pages = payload(REPO / 'web', args.revision)
     preflight(WEB_ROOT)
-    print(f'Preflight OK: revision {args.revision}, {len(assets)} static assets, 2 entry pages')
+    print(f'Preflight OK: revision {args.revision}, {len(assets)} static assets, {len(pages)} entry pages')
     if not args.apply:
         print('Read-only check complete. Use --apply to activate this exact front.')
         return
@@ -284,6 +322,7 @@ def run(args):
         raise
     print(f'Front LIVE and verified: {args.revision}')
     print('Collector, API cadence, data.json, logos and Apache configuration were not changed.')
+    return backup
 
 
 def main():

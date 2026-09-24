@@ -90,7 +90,7 @@ def main(path):
     except ValueError:
         return fail("snapshot timestamp must be UTC ISO-8601")
     coins = d.get("coins")
-    if not isinstance(coins, list) or not coins:
+    if not isinstance(coins, list) or not coins or len(coins) > 1250:
         return fail("coins must be a non-empty list")
     if d.get("count") != len(coins):
         return fail("count does not match coins length")
@@ -105,15 +105,17 @@ def main(path):
         if not isinstance(c, dict):
             return fail(f"coin #{i} is not an object")
         cid, sym, name = c.get("id"), c.get("symbol"), c.get("name")
-        if not isinstance(cid, str) or not COIN_ID_RE.match(cid):
+        if not isinstance(cid, str) or not COIN_ID_RE.fullmatch(cid):
             return fail(f"coin #{i} has invalid id")
         if cid in seen:
             return fail(f"duplicate coin id {cid}")
         seen.add(cid)
-        if not isinstance(sym, str) or not SYMBOL_RE.match(sym):
+        if not isinstance(sym, str) or not SYMBOL_RE.fullmatch(sym):
             return fail(f"{cid} has invalid symbol")
         if not clean_text(name, 96):
             return fail(f"{cid} has invalid name")
+        if c.get("asset_type", "crypto") not in ("crypto", "xstock"):
+            return fail(f"{cid} has invalid asset_type")
         if c.get("last_updated") is not None:
             observed = c["last_updated"]
             if not clean_text(observed, 40):
@@ -125,6 +127,8 @@ def main(path):
             except ValueError:
                 return fail(f"{cid} has invalid last_updated")
         for k in REQUIRED_NUMS:
+            if c.get("asset_type") == "xstock" and k != "current_price" and c.get(k) is None:
+                continue
             if not is_num(c.get(k)) or c[k] < 0:
                 return fail(f"{cid} has invalid {k}")
         for k in OPTIONAL_NUMS:

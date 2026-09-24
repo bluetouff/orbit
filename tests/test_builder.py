@@ -23,7 +23,7 @@ class BuilderTests(unittest.TestCase):
         c = coin()
         self.assertEqual(b.normalize_coin(c, {}, False)["last_updated"], "2026-01-01T00:00:00.123000+00:00")
         c["last_updated"] = "2026-01-01T00:00:00"
-        self.assertNotIn("last_updated", b.normalize_coin(c, {}, False))
+        self.assertIsNone(b.normalize_coin(c, {}, False))
 
     def test_booleans_missing_and_nonfinite_numbers_are_rejected(self):
         for value in [True, False, None, "", float("nan"), float("inf")]:

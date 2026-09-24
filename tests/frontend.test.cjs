@@ -176,3 +176,30 @@ test('market context and relative comparisons do not mutate inputs or depend on 
   const b=C.analyze({...s,coins:[...s.coins].reverse()},'24h',now);
   assert.deepEqual(a.market,b.market);assert.deepEqual(a.byId.get('ethereum').relativeBTC,b.byId.get('ethereum').relativeBTC);
 });
+
+test('xStocks cannot alter crypto statistics, signals or relative comparisons',()=>{
+  const original=raw(),baseline=C.analyze(C.normalizeSnapshot(original),'24h',now);
+  original.coins.push({...original.coins[0],id:'test-xstock',asset_type:'xstock',[C.TF['24h']]:99000,market_cap:1,total_volume:1e20});
+  const mixed=C.analyze(C.normalizeSnapshot(original),'24h',now);
+  assert.deepEqual(mixed.price,baseline.price);assert.deepEqual(mixed.activity,baseline.activity);assert.deepEqual(mixed.market,baseline.market);
+  assert.equal(mixed.referenceCount,baseline.referenceCount);
+  assert.deepEqual(mixed.byId.get('asset-0'),baseline.byId.get('asset-0'));
+  const stock=mixed.byId.get('test-xstock');assert.equal(stock.available,false);assert.equal(stock.relativeBTC.value,null);assert.deepEqual(stock.events,[]);
+});
+test('xStocks freshness is independent from crypto collection and fails closed',()=>{
+  const data=raw(1);data.coins[0]={...data.coins[0],id:'test-xstock',asset_type:'xstock',last_updated:stamp};
+  let s=C.normalizeSnapshot(data),c=s.coins[0];assert.equal(C.quoteState(s,c,now).usable,false);
+  data.status={coingecko_xstocks:{ok:true,fetched_at:stamp,last_success_at:stamp}};
+  s=C.normalizeSnapshot(data);assert.equal(C.quoteState(s,s.coins[0],now).usable,true);
+  assert.equal(C.quoteState(s,s.coins[0],now+180001).usable,false);
+  data.status.coingecko_xstocks.ok=false;s=C.normalizeSnapshot(data);
+  assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
+  data.status.coingecko_xstocks.ok=true;data.coins[0].last_updated='2025-01-01T00:00:00Z';s=C.normalizeSnapshot(data);
+  assert.equal(C.quoteState(s,s.coins[0],now).usable,false);
+});
+test('nullable token metrics remain missing and legacy xStocks stay outside crypto',()=>{
+  const data=raw(1);data.coins.push({...data.coins[0],id:'apple-xstock',market_cap:null,total_volume:null});
+  const s=C.normalizeSnapshot(data),c=s.coins[1];assert.equal(c.asset_type,'xstock');assert.equal(c.market_cap,null);assert.equal(c.total_volume,null);
+  assert.equal(C.analyze(s,'24h',now).referenceCount,1);
+  data.coins[1].current_price=null;assert.equal(C.normalizeSnapshot(data).coins.length,1);
+});

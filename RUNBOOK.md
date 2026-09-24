@@ -51,12 +51,16 @@ sudo install -d -m 755 /var/www/html/orbit
 sudo install -o root -g root -m 0644 web/index.html /var/www/html/orbit/index.html
 sudo install -o root -g root -m 0644 web/app.css    /var/www/html/orbit/app.css
 sudo install -o root -g root -m 0644 web/core.js    /var/www/html/orbit/core.js
+sudo install -o root -g root -m 0644 web/i18n.js    /var/www/html/orbit/i18n.js
 sudo install -o root -g root -m 0644 web/app.js     /var/www/html/orbit/app.js
 sudo install -d -m 755 /var/www/html/orbit/icons
 sudo install -o root -g root -m 0644 web/icons/*.svg web/icons/LICENSE /var/www/html/orbit/icons/
 sudo install -o root -g root -m 0644 web/orbit.svg  /var/www/html/orbit/orbit.svg
 sudo install -d -m 755 /var/www/html/orbit/legal
 sudo install -o root -g root -m 0644 web/legal/index.html /var/www/html/orbit/legal/index.html
+sudo install -d -m 755 /var/www/html/orbit/docs/en
+sudo install -o root -g root -m 0644 web/docs/index.html /var/www/html/orbit/docs/index.html
+sudo install -o root -g root -m 0644 web/docs/en/index.html /var/www/html/orbit/docs/en/index.html
 # Do NOT copy local web/data.json to prod: use the server-generated snapshot.
 ```
 
@@ -134,8 +138,8 @@ User traffic is decoupled from data providers:
 
 With the default settings (`ORBIT_TOP=500`, ~30 s timer), one crypto-market
 build calls CoinGecko for 2 `coins/markets` pages. CoinGecko `global` is fetched
-at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
-3600 s. That is roughly 4-5 CoinGecko calls per minute at rest. This is not a
+at most every 120 s, the xStocks category at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
+3600 s. That is roughly 5 CoinGecko calls per minute at rest. This is not a
 guarantee against rate limits: check both minute limits and monthly credits on
 the actual provider plan. Browser population does not change that number.
 Missing logos are downloaded in bounded batches
@@ -167,6 +171,10 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 - **Slow-source TTLs**: `ORBIT_GLOBAL_REFRESH_SEC` (default 120),
   `ORBIT_SOCIAL_REFRESH_SEC` (default 900), `ORBIT_MACRO_REFRESH_SEC`
   (default 3600). Non-due sources are reused from the previous snapshot.
+- **xStocks**: `ORBIT_XSTOCKS_REFRESH_SEC` (default 120 seconds) adds one
+  bounded category request, up to 250 assets. Check `status.coingecko_xstocks`
+  separately from crypto freshness. A failure retains explicitly stale quotes.
+  The xStocks map shows the top 50; all collected xStocks are searchable.
 - **Depth**: `ORBIT_TOP` (universe) and `ORBIT_SPARK_TOP` (coins with sparkline)
   in `orbit.env`. The larger it is, the heavier `orbit.json` gets.
 - **Logo warmup**: `ORBIT_LOGO_FETCH_PER_RUN` caps new logo downloads per build.
@@ -202,13 +210,17 @@ python3 scripts/deploy_front.py --revision FULL_40_CHARACTER_SHA
 sudo python3 scripts/deploy_front.py --revision FULL_40_CHARACTER_SHA --apply
 ```
 
-The first command is read-only. It checks that both public entry pages match the
+The first command is read-only. It checks that existing public entry pages match the
 local web root, that the expected CSP is present and that the public snapshot is
 current. Activation prepares `/releases/<SHA>/` containing only allowlisted
 static assets, then checks every asset's HTTPS body and MIME type before swapping
-the two entry pages with atomic file replacements. Each page references one
+the four entry pages (app, legal, FR guide, EN guide) with atomic file replacements. Each page references one
 complete immutable asset version. A public `orbit-release` meta tag identifies
 the exact source SHA. Existing `app.js`, `app.css`, logos and data stay untouched.
+
+A new documentation page must return HTTP 404 before its first deployment.
+Rollback removes newly created pages and restores existing ones. Earlier
+two-page backups remain usable.
 
 Original entry pages and a hash manifest are saved under `/var/backups/orbit/`.
 The command prints the exact rollback instruction before activating. A failed
@@ -236,3 +248,48 @@ tabs or rollback entry pages may still refer to them.
   logo host allowlist, bounded response size, atomic writes.
 - FRED/LunarCrush/CoinGecko keys live in `/etc/orbit/orbit.env` (640), injected
   by systemd, never on disk where the front can access them.
+
+## Coordinated xStocks and documentation release
+
+This release changes the collector and the frontend. A frontend-only update
+does not populate the xStocks catalog. From a clean checkout on the production
+host at the full approved SHA, run:
+
+```bash
+python3 scripts/deploy_release.py --revision FULL_40_CHARACTER_SHA
+sudo python3 scripts/deploy_release.py --revision FULL_40_CHARACTER_SHA --apply
+```
+
+The administrator enters sudo personally. The first command is read-only. It
+checks the existing `/opt/orbit` collector, service user and hardening, active
+timer, exact Git revision, public pages, CSP and market snapshot. A mismatch
+blocks activation instead of rewriting the host configuration.
+
+Activation takes the shared deployment lock, checks output paths without
+printing credentials, pauses the existing timer and waits for an in-flight
+collection to finish. It backs up the collector and validator, then replaces
+them atomically. The existing service collects with its own provider environment.
+The new snapshot must pass the schema validator, contain xStocks and have
+current successful crypto and xStocks statuses before the frontend is published.
+The timer resumes on success or failure; its configuration remains unchanged.
+
+The command prints one full rollback command **before replacing the collector**:
+
+```bash
+sudo python3 scripts/deploy_release.py --rollback COLLECTOR_BACKUP_NAME
+```
+
+Backups live under `/var/backups/orbit/`. Rollback checks file hashes and refuses
+to overwrite a newer collector or frontend. It restores the previous collector
+and entry pages, leaving generated data and immutable assets in place. It does
+not copy preview snapshots or provider credentials to production.
+
+After activation, verify `/`, `/legal/`, `/docs/` and `/docs/en/` all expose the
+approved `orbit-release` SHA; compare the served immutable assets with that
+checkout. Verify xStocks quotes and original observation times, independent
+source status, mixed favorites, FR/EN navigation, mobile layout, CSP, no cookies
+and no third-party browser requests. The guide pages require no JavaScript.
+
+The additional category request is TTL-cached independently (120 seconds by
+default); existing crypto, macro and social provider settings are preserved.
+Validate both per-minute limits and monthly credits for the actual provider plan.

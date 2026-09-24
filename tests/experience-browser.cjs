@@ -13,9 +13,9 @@ async function main(){
     page.on('request',r=>{if(new URL(r.url()).origin!==origin)external.push(r.url());});
     await page.goto(origin+'/web/');await page.waitForFunction(()=>state.snapshot&&[...logos.values()].filter(l=>l.ok).length>=6);
     assert.equal(await page.locator('html').getAttribute('lang'),'fr');
-    assert.match(await page.locator('#buildWatchlist').textContent(),/Choisir mes cryptos/);
-    assert.match(await page.locator('.home-copy').textContent(),/Vos cryptos/);
-    assert.match(await page.locator('#mapSummary').textContent(),/^6 cryptos/);
+    assert.match(await page.locator('#buildWatchlist').textContent(),/Choisir mes actifs/);
+    assert.match(await page.locator('.home-copy').textContent(),/Vos actifs/);
+    assert.match(await page.locator('#mapSummary').textContent(),/^6 actifs/);
     assert.doesNotMatch(await page.locator('#mapSummary').textContent(),/indisponibles/);
     assert.equal(await page.locator('.support-link').getAttribute('href'),'https://l0g.fr/soutenir/');
     assert.equal(await page.evaluate(()=>state.selected.size),0);

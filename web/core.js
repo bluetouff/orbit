@@ -16,16 +16,19 @@
     return Number.isFinite(n) && n >= lo && n <= hi ? n : null;
   }
   function time(v) { const n = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v) ? Date.parse(v) : NaN; return Number.isFinite(n) ? n : null; }
+  const isXstock = c => c?.asset_type==='xstock'||/xstocks?$/i.test(c?.id||'')||/\bxstocks?\b/i.test(c?.name||'');
+  const assetSource = c => isXstock(c)?'coingecko_xstocks':'coingecko_markets';
   function normalizeSnapshot(d) {
     if (!d || !Array.isArray(d.coins)) throw new Error('Invalid snapshot');
     const ids = new Set(), coins = [];
-    for (const c of d.coins.slice(0,1000)) {
+    for (const c of d.coins.slice(0,1250)) {
       if (!c || typeof c !== 'object') continue;
       const id=text(c.id,80), symbol=text(c.symbol,20), name=text(c.name);
       if (!ID.test(id) || !/^[a-z0-9][a-z0-9._-]{0,19}$/i.test(symbol) || !name || ids.has(id)) continue;
-      const o={id,symbol,name,has_logo:c.has_logo!==false};
+      if(c.asset_type!=null&&!['crypto','xstock'].includes(c.asset_type)) continue;
+      const o={id,symbol,name,has_logo:c.has_logo!==false,asset_type:isXstock(c)?'xstock':'crypto'};
       for (const k of ['current_price','market_cap','total_volume','ath','circulating_supply']) o[k]=num(c[k],0);
-      if (['current_price','market_cap','total_volume'].some(k=>o[k]===null)) continue;
+      if (o.current_price===null||(!isXstock(o)&&['market_cap','total_volume'].some(k=>o[k]===null))) continue;
       o.market_cap_rank=num(c.market_cap_rank,1,1000000);
       for (const k of Object.values(TF)) o[k]=num(c[k],-100,100000);
       for (const k of ['galaxy_score','sentiment','social_dominance']) o[k]=num(c[k],0,100);
@@ -37,7 +40,7 @@
     }
     if (!coins.length) throw new Error('No valid market data');
     const status={};
-    for (const key of ['coingecko_markets','coingecko_global','lunarcrush','fred']) {
+    for (const key of ['coingecko_markets','coingecko_xstocks','coingecko_global','lunarcrush','fred']) {
       const s=d.status?.[key];
       if (!s || typeof s!=='object') continue;
       status[key]={ok:s.ok===true,enabled:s.enabled!==false,reused:s.reused===true,
@@ -59,7 +62,7 @@
     const s=snapshot?.status?.[key];
     const stamp=s?.last_success_at || (s?.ok===false?null:s?.fetched_at) || (key==='coingecko_markets'?snapshot?.snapshot:null);
     const ms=time(stamp), age=ms===null?null:now-ms;
-    const ttl={coingecko_markets:180,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
+    const ttl={coingecko_markets:180,coingecko_xstocks:180,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
     let kind='current';
     if (s?.enabled===false) kind='disabled';
     else if (s?.ok===false) kind='unavailable';
@@ -79,6 +82,10 @@
     const stamp=time(c.last_updated);
     if(stamp===null) return 'invalid';
     return now-stamp>=-60000&&now-stamp<=180000?'current':'stale';
+  }
+  function quoteState(snapshot,c,now=Date.now()) {
+    const source=sourceState(snapshot,assetSource(c),now),observed=observation(c,now);
+    return {source,observed,usable:source.usable&&['current','unknown'].includes(observed)};
   }
   function relativeBitcoin(c,btc,key,current,now) {
     const result={value:null,reason:null,dated:false};
@@ -103,10 +110,11 @@
     const coins=snapshot?.coins || [],key=TF[tf]||TF['24h'];
     const current=sourceState(snapshot,'coingecko_markets',now).usable;
     const observed=c=>['current','unknown'].includes(observation(c,now));
-    const peers=coins.filter(c=>observed(c)&&Number.isFinite(c[key]));
+    const crypto=coins.filter(c=>!isXstock(c));
+    const peers=crypto.filter(c=>observed(c)&&Number.isFinite(c[key]));
     const price=stats(peers.map(c=>c[key]));
     const sorted=peers.map(c=>c[key]).sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);
-    const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:coins.length,
+    const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:crypto.length,
       dated:peers.filter(c=>observation(c,now)==='current').length,median:null,up:null,down:null,flat:null};
     if(market.available) {
       market.median=sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
@@ -119,8 +127,9 @@
     const byId=new Map();
     for(const c of coins) {
       const result={events:[],priceZ:null,activityZ:null,divergence:null,score:0,available:false,reason:null,
-        observation:observation(c,now),relativeBTC:relativeBitcoin(c,btc,key,current,now),medianGap:null};
+        observation:observation(c,now),relativeBTC:isXstock(c)?{value:null,reason:'xStocks are outside the crypto reference',dated:false}:relativeBitcoin(c,btc,key,current,now),medianGap:null};
       byId.set(c.id,result);
+      if(isXstock(c)) {result.reason='xStocks are outside the crypto reference';continue;}
       if(!current) {result.reason='Market data is not current';continue;}
       if(!observed(c)) {result.reason=result.observation==='invalid'?'Asset observation time is invalid':'Asset price is stale';continue;}
       if(!Number.isFinite(c[key])) {result.reason='Return unavailable for this period';continue;}
@@ -142,7 +151,7 @@
       }
       result.score=Math.max(0,...result.events.map(e=>e.score));
     }
-    return {byId,price,activity,market,tf,referenceCount:coins.length,current,minPeers:MIN_PEERS};
+    return {byId,price,activity,market,tf,referenceCount:crypto.length,current,minPeers:MIN_PEERS};
   }
   function settings(value) {
     const s={...DEFAULTS};
@@ -156,14 +165,14 @@
   function importWatchlist(raw) {
     if(typeof raw!=='string'||raw.length>16384) throw new Error('File exceeds 16 KB');
     let d; try {d=JSON.parse(raw);}catch {throw new Error('Invalid JSON file');}
-    if(!d||d.version!==1||!Array.isArray(d.coins)||d.coins.length>MAX_FAV) throw new Error('Expected an Orbit2 watchlist with up to 50 coins');
-    if(d.coins.some(id=>typeof id!=='string'||!ID.test(id))) throw new Error('Invalid coin identifier');
+    if(!d||d.version!==1||!Array.isArray(d.coins)||d.coins.length>MAX_FAV) throw new Error('Expected an Orbit2 watchlist with up to 50 assets');
+    if(d.coins.some(id=>typeof id!=='string'||!ID.test(id))) throw new Error('Invalid asset identifier');
     const coins=[...new Set(d.coins)];
     return {coins,settings:settings(d.settings)};
   }
   function mergeWatchlist(current,incoming,replace=false) {
     const result=[...new Set(replace?incoming:[...current,...incoming])];
-    if(result.length>MAX_FAV) throw new Error('This selection exceeds 50 coins');
+    if(result.length>MAX_FAV) throw new Error('This selection exceeds 50 assets');
     return result;
   }
   function squarify(items,rect) {
@@ -192,5 +201,5 @@
     const logo=hasLogo?Math.max(0,Math.min(iw*.53,ih-font-gap,ih*.58)):0;
     return {pad,font:hasLogo?font:Math.min(iw/6.5,ih*.45),logo,gap};
   }
-  return {TF,ID,MAX_FAV,MIN_PEERS,DEFAULTS,text,num,time,normalizeSnapshot,sourceState,stats,analyze,settings,importWatchlist,mergeWatchlist,squarify,tileContent};
+  return {TF,ID,MAX_FAV,MIN_PEERS,DEFAULTS,text,num,time,isXstock,assetSource,quoteState,normalizeSnapshot,sourceState,stats,analyze,settings,importWatchlist,mergeWatchlist,squarify,tileContent};
 });

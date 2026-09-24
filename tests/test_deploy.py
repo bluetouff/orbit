@@ -21,6 +21,7 @@ class DeployTests(unittest.TestCase):
         (self.root / 'legal').mkdir(parents=True)
         self.old = {name: ('Old ' + name).encode() for name in d.PAGES}
         for name, body in self.old.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_bytes(body)
         (self.root / 'app.js').write_text('legacy script')
         (self.root / 'data.json').write_text('protected snapshot')
@@ -41,10 +42,13 @@ class DeployTests(unittest.TestCase):
         self.assertIn('i18n.js', assets)
         self.assertNotIn('data.json', assets)
         self.assertTrue(all(not n.startswith('logos/') for n in assets))
-        for body in pages.values():
+        for name, body in pages.items():
             text = body.decode()
             self.assertIn(f'/releases/{REV}/app.css', text)
-            self.assertIn(f'/releases/{REV}/i18n.js', text)
+            if name in d.LEGACY_PAGES:
+                self.assertIn(f'/releases/{REV}/i18n.js', text)
+            else:
+                self.assertNotIn('<script', text)
             self.assertIn(f'name="orbit-release" content="{REV}"', text)
             self.assertNotIn('orbit2-experience-1', text)
         self.assertIn('href="legal/"', pages['index.html'].decode())
@@ -79,6 +83,51 @@ class DeployTests(unittest.TestCase):
         d.restore(self.root, backup)
         self.assert_old()
         self.assertTrue((self.root / 'releases' / REV / 'app.js').is_file())
+
+    def test_new_documentation_pages_are_removed_on_rollback(self):
+        for name in d.PAGES:
+            if name not in d.LEGACY_PAGES:
+                (self.root / name).unlink()
+        backup = self.prepare()
+        d.activate(self.root, backup, self.pages)
+        self.assertTrue((self.root / 'docs/en/index.html').is_file())
+        d.restore(self.root, backup)
+        for name in d.PAGES:
+            if name in d.LEGACY_PAGES:
+                self.assertEqual((self.root / name).read_bytes(), self.old[name])
+            else:
+                self.assertFalse((self.root / name).exists())
+
+    def test_legacy_two_page_backup_remains_restorable(self):
+        backup = self.prepare()
+        d.activate(self.root, backup, self.pages)
+        manifest = json.loads((backup / 'manifest.json').read_text())
+        manifest['pages'] = {name: manifest['pages'][name] for name in d.LEGACY_PAGES}
+        (backup / 'manifest.json').write_text(json.dumps(manifest))
+        d.restore(self.root, backup)
+        for name in d.LEGACY_PAGES:
+            self.assertEqual((self.root / name).read_bytes(), self.old[name])
+        self.assertEqual((self.root / 'docs/index.html').read_bytes(), self.pages['docs/index.html'])
+
+    def test_new_page_preflight_requires_public_404_and_safe_path(self):
+        for name in d.PAGES:
+            if name not in d.LEGACY_PAGES:
+                (self.root / name).unlink()
+        def public(path):
+            if path.startswith('/docs/'):
+                raise d.urllib.error.HTTPError(path, 404, 'Not found', {}, None)
+            name = 'index.html' if path == '/' else 'legal/index.html'
+            return self.old[name], {'Content-Security-Policy': "script-src 'self'; connect-src 'self'; frame-ancestors 'none'"}
+        with patch.object(d, 'public', side_effect=public), patch.object(d, 'check_snapshot'):
+            d.preflight(self.root)
+        with patch.object(d, 'public', return_value=(b'existing page', {})):
+            with self.assertRaises(ValueError):
+                d.preflight(self.root)
+        (self.root / 'docs/en').rmdir()
+        (self.root / 'docs').rmdir()
+        (self.root / 'docs').symlink_to(self.base)
+        with self.assertRaises(ValueError):
+            d.page_body(self.root, 'docs/index.html')
 
     def test_immutable_release_cannot_be_overwritten(self):
         self.prepare()
