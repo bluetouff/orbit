@@ -268,10 +268,16 @@ blocks activation instead of rewriting the host configuration.
 Activation takes the shared deployment lock, checks output paths without
 printing credentials, pauses the existing timer and waits for an in-flight
 collection to finish. It backs up the collector and validator, then replaces
-them atomically. The existing service collects with its own provider environment.
+them atomically. A quiet minute with the timer paused prevents an immediate extra burst after
+the preceding production collection. The existing service then collects with
+its own provider environment.
 The new snapshot must pass the schema validator, contain xStocks and have
 current successful crypto and xStocks statuses before the frontend is published.
-The timer resumes on success or failure; its configuration remains unchanged.
+The timer configuration remains unchanged. Before resuming it, including after
+a rollback to a legacy collector, the script honors a recorded provider cooldown.
+It waits at most 30 minutes at this recovery step. A longer or malformed cooldown
+leaves the timer paused with an explicit message for the administrator; it never
+shortens the provider deadline or silently forces another request.
 
 The command prints one full rollback command **before replacing the collector**:
 
@@ -293,3 +299,31 @@ and no third-party browser requests. The guide pages require no JavaScript.
 The additional category request is TTL-cached independently (120 seconds by
 default); existing crypto, macro and social provider settings are preserved.
 Validate both per-minute limits and monthly credits for the actual provider plan.
+
+## CoinGecko HTTP 429 recovery
+
+A 429 is provider backpressure, not evidence of bad authentication.
+[CoinGecko documents](https://docs.coingecko.com/docs/errors-and-rate-limits)
+that unsuccessful requests also count toward minute limits, so immediate
+retries can extend the problem. Do not loop over manual service starts.
+
+The collector saves only `retry_at` (a UTC epoch second) and `failures`
+(a bounded integer) in `/var/lib/orbit/.coingecko-rate-limit.json`, mode 0600.
+The file is outside the web root and ignored by Git; it contains no URL,
+provider response, key or environment value. All CoinGecko endpoints share
+this cooldown, which survives timer invocations.
+
+`Retry-After` accepts seconds or an HTTP date, following
+[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after).
+Without a usable header, waits progress through 120, 240, 480, 960 and
+1800 seconds. A supplied longer delay is preserved. Success on one market page
+does not reset the counter; a completed recovered collection does. During a
+market cooldown, the previous snapshot and all its timestamps remain untouched.
+The journal contains a bounded status message rather than request details.
+
+Release activation allows at most one delayed retry, exclusively after a
+recorded 429. It waits up to three minutes for that retry and never retries an
+authentication, service or schema failure. Both market feeds must still pass
+validation before the frontend is activated. On failure the previous collector
+is restored, and its timer cannot bypass the recorded cooldown. An extended
+provider limit remains an operational constraint, not a successful release.

@@ -248,3 +248,10 @@ generated real crypto/xStocks snapshot, then publishes the four entry pages
 with immutable assets. Failures restore the collector and affected entry pages.
 Provider credentials, Apache configuration and source cadence are preserved.
 The precise administrator commands and rollback procedure are in [RUNBOOK.md](RUNBOOK.md).
+
+CoinGecko 429 responses trigger a shared, persistent cooldown across market,
+xStocks and global requests. The collector honors `Retry-After`, uses bounded
+exponential backoff when the header is absent, and preserves snapshot timestamps.
+The private cooldown file contains only numeric transport metadata, is outside
+the web root and is ignored by Git. See [HTTP 429 recovery](RUNBOOK.md#coingecko-http-429-recovery)
+for deployment waiting and rollback behavior.

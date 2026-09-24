@@ -13,6 +13,8 @@ for logos, per-response size cap, timeouts, atomic writes.
 import calendar, datetime, json, math, os, re, ssl, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter
 from itertools import zip_longest
+from email.utils import parsedate_to_datetime
+import tempfile
 
 
 def env_int(name, default, lo, hi):
@@ -73,6 +75,70 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=_CTX))
+
+
+class CoinGeckoCooldown(Exception):
+    """Expected provider backpressure, containing no request or credential."""
+    def __init__(self, retry_at):
+        self.retry_at = retry_at
+        super().__init__('CoinGecko requests deferred')
+
+
+def rate_limit_path():
+    return os.path.join(OUT_DIR, '.coingecko-rate-limit.json')
+
+
+def read_rate_limit():
+    try:
+        fd = os.open(rate_limit_path(), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {'retry_at': 0, 'failures': 0}
+    with os.fdopen(fd, encoding='utf-8') as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('Invalid CoinGecko cooldown state')
+    state = json.loads(raw)
+    if not isinstance(state, dict) or type(state.get('retry_at')) is not int or not 0 <= state['retry_at'] <= 253402300799 or type(state.get('failures')) is not int or not 0 <= state['failures'] <= 5:
+        raise ValueError('Invalid CoinGecko cooldown state')
+    return state
+
+
+def retry_delay(header, failures, now):
+    # Conservative fallback: 120s, 240s, 480s, 960s, then 1800s.
+    delay = min(1800, 120 * 2 ** (min(5, max(1, failures)) - 1))
+    if isinstance(header, str) and len(header) <= 128:
+        value = header.strip()
+        try:
+            if re.fullmatch(r'[0-9]+', value):
+                supplied = int(value)
+            else:
+                parsed = parsedate_to_datetime(value)
+                if parsed.tzinfo is None:
+                    return delay
+                supplied = math.ceil(parsed.timestamp() - now)
+            delay = max(delay, supplied)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    # Values outside datetime's range remain effectively blocked, never overflow.
+    return min(delay, max(0, 253402300799 - math.ceil(now)))
+
+
+def record_rate_limit(header, previous):
+    now = time.time()
+    failures = min(5, previous['failures'] + 1)
+    retry_at = math.ceil(now) + retry_delay(header, failures, now)
+    state = {'retry_at': retry_at, 'failures': failures}
+    fd, temporary = tempfile.mkstemp(prefix='.coingecko-', dir=OUT_DIR)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(state, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, rate_limit_path())
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return retry_at
 
 
 def utc_now():
@@ -138,8 +204,18 @@ def fetch(url, headers=None, binary=False):
 
 
 def cg(path, params):
+    state = read_rate_limit()
+    if state['retry_at'] > time.time():
+        raise CoinGeckoCooldown(state['retry_at'])
     headers = {f"x-cg-{CG_TIER}-api-key": CG_KEY} if CG_KEY and CG_TIER in ("demo", "pro") else None
-    return fetch(f"{CG_BASE}/{path}?{urllib.parse.urlencode(params)}", headers=headers)
+    try:
+        return fetch(f"{CG_BASE}/{path}?{urllib.parse.urlencode(params)}", headers=headers)
+    except urllib.error.HTTPError as error:
+        if error.code != 429:
+            raise
+        header = error.headers.get('Retry-After') if error.headers else None
+        error.close()
+        raise CoinGeckoCooldown(record_rate_limit(header, state)) from None
 
 
 def downsample(arr, n):
@@ -443,6 +519,12 @@ def build():
     for c in coins:
         c["has_logo"] = os.path.exists(os.path.join(LOGO_DIR, c["id"] + ".png"))
 
+    # Reset only after all CoinGecko feeds recovered, never between market pages.
+    if crypto_count and xstocks_status.get('ok') and global_status.get('ok') and not global_status.get('error') and read_rate_limit()['retry_at'] <= time.time():
+        try:
+            os.unlink(rate_limit_path())
+        except FileNotFoundError:
+            pass
     snapshot = {
         "snapshot": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "count": len(coins),
@@ -469,4 +551,12 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    try:
+        build()
+    except CoinGeckoCooldown as error:
+        stamp = datetime.datetime.fromtimestamp(error.retry_at, datetime.timezone.utc).isoformat()
+        sys.stderr.write(f'CoinGecko cooldown until {stamp}; previous snapshot retained, no retry this run.\n')
+    except Exception as error:
+        # No URL, upstream response or credential in the journal.
+        sys.stderr.write(f'snapshot failed: {type(error).__name__}; previous snapshot retained.\n')
+        sys.exit(1)

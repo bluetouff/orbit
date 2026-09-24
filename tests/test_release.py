@@ -77,7 +77,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_snapshot_failure_restores_collector_without_publishing_front(self):
         args = argparse.Namespace(revision=REV, apply=True, rollback=None)
-        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected', side_effect=ValueError('source unavailable')), patch.object(release.front, 'run') as front_run:
+        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected', side_effect=ValueError('source unavailable')), patch.object(release.front, 'run') as front_run:
             with self.assertRaisesRegex(ValueError, 'source unavailable'):
                 release.run(args)
             front_run.assert_not_called()
@@ -86,7 +86,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_front_failure_restores_collector(self):
         args = argparse.Namespace(revision=REV, apply=True, rollback=None)
-        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', side_effect=ValueError('front proof failed')):
+        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', side_effect=ValueError('front proof failed')):
             with self.assertRaisesRegex(ValueError, 'front proof failed'):
                 release.run(args)
         self.assertEqual((self.install / 'build_snapshot.py').read_bytes(), self.old)
@@ -99,7 +99,7 @@ class ReleaseTests(unittest.TestCase):
             # The recovery manifest is durable before frontend activation begins.
             saved = json.loads(next(self.backups.glob('collector-*/collector.json')).read_text())
             self.assertEqual(saved['front_backup'], 'front-backup')
-        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', side_effect=activate_front):
+        with patch.object(release, 'preflight'), patch.object(release, 'check_environment_paths'), patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'validate_collected'), patch.object(release.front, 'run', side_effect=activate_front):
             release.run(args)
         record = json.loads(next(self.backups.glob('collector-*/collector.json')).read_text())
         self.assertEqual(record['front_backup'], 'front-backup')
@@ -141,6 +141,69 @@ class ReleaseTests(unittest.TestCase):
         (self.backups / 'collector-link').symlink_to(self.base)
         with self.assertRaisesRegex(ValueError, 'Unexpected backup path'):
             release.rollback('collector-link')
+
+    def test_collection_retries_once_only_after_recorded_provider_backpressure(self):
+        with patch.object(release, 'wait_for_provider') as wait, patch.object(release, 'systemctl') as ctl, patch.object(release, 'provider_retry_at', return_value=200), patch.object(release.time, 'time', return_value=100), patch.object(release, 'validate_collected', side_effect=[release.CollectionNotReady('no new snapshot'), None]):
+            release.collect_for_release()
+        self.assertEqual([call.args for call in wait.call_args_list], [(60,), (0,)])
+        self.assertEqual([call.args for call in ctl.call_args_list], [('start', release.SERVICE)] * 2)
+
+    def test_collection_does_not_retry_service_or_schema_failure(self):
+        for service_failure in (False, True):
+            with patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl', side_effect=ValueError('service failed') if service_failure else None) as ctl, patch.object(release, 'provider_retry_at', return_value=10**10), patch.object(release, 'validate_collected', side_effect=ValueError('invalid snapshot')):
+                with self.assertRaises(ValueError):
+                    release.collect_for_release()
+                ctl.assert_called_once_with('start', release.SERVICE)
+
+    def test_repeated_rate_limits_do_not_create_an_unbounded_retry_loop(self):
+        with patch.object(release, 'wait_for_provider') as wait, patch.object(release, 'systemctl') as ctl, patch.object(release, 'provider_retry_at', return_value=200), patch.object(release.time, 'time', return_value=100), patch.object(release, 'validate_collected', side_effect=release.CollectionNotReady('no new snapshot')):
+            with self.assertRaises(ValueError):
+                release.collect_for_release()
+        self.assertEqual(wait.call_count, 2)
+        self.assertEqual(ctl.call_count, 2)
+
+    def test_wait_honors_deadline_without_network_and_uses_bounded_sleep_chunks(self):
+        current = [100]
+        chunks = []
+        def sleep(seconds):
+            chunks.append(seconds)
+            current[0] += seconds
+        with patch.object(release, 'provider_retry_at', return_value=220), patch.object(release.time, 'time', side_effect=lambda: current[0]), patch.object(release.time, 'sleep', side_effect=sleep), patch.object(release, 'systemctl') as ctl:
+            release.wait_for_provider(60)
+            ctl.assert_not_called()
+        self.assertEqual(current[0], 220)
+        self.assertEqual(chunks, [30, 30, 30, 30])
+
+    def test_long_provider_delay_is_not_shortened(self):
+        with patch.object(release, 'provider_retry_at', return_value=1000), patch.object(release.time, 'time', return_value=100), patch.object(release.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, 'deployment deferred without a new request'):
+                release.wait_for_provider(60)
+            sleep.assert_not_called()
+
+    def test_legacy_timer_restart_cannot_bypass_recorded_cooldown(self):
+        order = []
+        with patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'systemctl', side_effect=lambda *args: order.append(args)), patch.object(release, 'wait_for_provider', side_effect=lambda *args, **kwargs: order.append(('cooldown', args, kwargs))):
+            with release.paused_timer():
+                order.append(('restored',))
+        self.assertEqual(order, [('stop', release.TIMER), ('restored',), ('cooldown', (0,), {'maximum': 1800}), ('start', release.TIMER)])
+
+    def test_unmanageable_cooldown_leaves_timer_paused_instead_of_forcing_provider(self):
+        with patch.object(release, 'property_value', return_value='inactive'), patch.object(release, 'systemctl') as ctl, patch.object(release, 'wait_for_provider', side_effect=ValueError('long cooldown')):
+            with self.assertRaisesRegex(ValueError, 'long cooldown'):
+                with release.paused_timer():
+                    pass
+        ctl.assert_called_once_with('stop', release.TIMER)
+
+    def test_transport_state_rejects_invalid_or_symlinked_file_without_printing_values(self):
+        file = release.SNAPSHOT.parent / '.coingecko-rate-limit.json'
+        for raw in ['{}', '[]', '{bad', 'x' * 4097, '{"retry_at": true}', '{"retry_at": -1}']:
+            file.write_text(raw)
+            with self.assertRaises(ValueError):
+                release.provider_retry_at()
+        file.unlink()
+        file.symlink_to(self.repo / 'build_snapshot.py')
+        with self.assertRaises(OSError):
+            release.provider_retry_at()
 
 
 if __name__ == '__main__':

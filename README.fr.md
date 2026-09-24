@@ -59,3 +59,10 @@ Le [RUNBOOK.md](RUNBOOK.md) détaille l’installation et les mises à jour. `sc
 Ne jamais copier les données d’aperçu, les logos générés ou les identifiants dans un commit ou une archive publique. Le fichier `env.example` décrit les paramètres ; les secrets restent dans l’environnement du serveur. Une publication Git ne suffit pas : le SHA et les données effectivement servis doivent être vérifiés après activation.
 
 Les guides utilisateur sont dans `web/docs/index.html` et `web/docs/en/index.html`. Ils fonctionnent sans JavaScript et sont versionnés avec l’application. Le README anglais décrit plus précisément le contrat des données, les formules et les limites des signaux.
+
+En cas de réponse HTTP 429 de CoinGecko, le collecteur diffère tous les appels
+à ce fournisseur et respecte `Retry-After`. La temporisation persiste entre
+les passages du timer ; les prix et leurs dates restent inchangés. Son fichier
+privé ne contient qu’une date de reprise et un compteur, hors du webroot et
+ignorés par Git. Le [runbook](RUNBOOK.md#coingecko-http-429-recovery) précise les
+attentes bornées du déploiement et la reprise après restauration.

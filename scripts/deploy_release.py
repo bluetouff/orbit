@@ -26,6 +26,10 @@ SERVICE = 'orbit-snapshot.service'
 TIMER = 'orbit-snapshot.timer'
 
 
+class CollectionNotReady(ValueError):
+    """A valid snapshot has not yet received current crypto and xStocks data."""
+
+
 def systemctl(*args):
     # Never print journal entries or environment values containing credentials.
     result = subprocess.run(['/usr/bin/systemctl', *args], capture_output=True, text=True, timeout=180)
@@ -108,6 +112,13 @@ def paused_timer():
             time.sleep(1)
         yield
     finally:
+        try:
+            # A restored legacy collector does not understand the cooldown file.
+            # Do not let restarting its timer bypass a freshly received 429.
+            wait_for_provider(0, maximum=1800)
+        except Exception:
+            print('Provider cooldown could not be safely completed. Timer remains paused; inspect the reported deadline before resuming it.', flush=True)
+            raise
         systemctl('start', TIMER)
 
 
@@ -153,17 +164,66 @@ def validate_collected(started):
     data = json.loads(SNAPSHOT.read_text())
     generated = dt.datetime.fromisoformat(data['snapshot'].replace('Z', '+00:00'))
     if generated.timestamp() < started:
-        raise ValueError('Collector did not produce a new snapshot')
+        raise CollectionNotReady('Collector did not produce a new snapshot')
     for name in ('coingecko_markets', 'coingecko_xstocks'):
         status = data.get('status', {}).get(name, {})
         stamp = dt.datetime.fromisoformat((status.get('fetched_at') or '').replace('Z', '+00:00'))
         age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
         if status.get('ok') is not True or not -60 <= age <= 180:
-            raise ValueError(f'{name} is unavailable or stale; rolling back')
+            raise CollectionNotReady(f'{name} is unavailable or stale; rolling back')
     count = sum(c.get('asset_type') == 'xstock' for c in data['coins'])
     if not count:
-        raise ValueError('No xStocks collected; rolling back')
+        raise CollectionNotReady('No xStocks collected; rolling back')
     print(f'New snapshot valid: {len(data["coins"])} assets, {count} xStocks, both market feeds current.')
+
+
+def provider_retry_at():
+    # Private numeric transport state only; never read provider credentials here.
+    try:
+        fd = os.open(SNAPSHOT.parent / '.coingecko-rate-limit.json', os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return 0
+    with os.fdopen(fd) as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('Invalid provider cooldown state')
+    state = json.loads(raw)
+    value = state.get('retry_at') if isinstance(state, dict) else None
+    if type(value) is not int or not 0 <= value <= 253402300799:
+        raise ValueError('Invalid provider cooldown state')
+    return value
+
+
+def wait_for_provider(minimum, maximum=180):
+    now = time.time()
+    deadline = max(now + minimum, provider_retry_at())
+    if deadline - now > maximum:
+        stamp = dt.datetime.fromtimestamp(deadline, dt.timezone.utc).isoformat()
+        raise ValueError(f'CoinGecko cooldown until {stamp}; deployment deferred without a new request')
+    if deadline > now:
+        print(f'Provider quiet period: {int(deadline - now) + 1}s, collector timer paused.', flush=True)
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(30, remaining))
+
+
+def collect_for_release():
+    # One collection after a quiet minute; at most one retry, only after a
+    # recorded 429 cooldown. No retry for schema, auth or service failures.
+    for attempt in range(2):
+        wait_for_provider(60 if attempt == 0 else 0)
+        started = int(time.time())
+        systemctl('start', SERVICE)
+        try:
+            validate_collected(started)
+            return
+        except CollectionNotReady:
+            if attempt == 0 and provider_retry_at() > time.time():
+                print('CoinGecko rate limited this collection; waiting for its cooldown before one retry.', flush=True)
+                continue
+            raise
 
 
 def rollback(name):
@@ -195,13 +255,11 @@ def run(args):
         command = f'sudo python3 {shlex.quote(str(Path(__file__).resolve()))} --rollback {backup.name}'
         print('Full rollback: ' + command, flush=True)
         try:
-            started = int(time.time())
             for name, source in FILES.items():
                 if front.body_hash(read_installed(name)) != record['files'][name]['old']:
                     raise ValueError('Collector changed during deployment')
                 front.atomic_write(installed(name), (front.REPO / source).read_bytes())
-            systemctl('start', SERVICE)
-            validate_collected(started)
+            collect_for_release()
             def remember_front(front_backup):
                 # Persist the full recovery path before either HTML page changes.
                 record['front_backup'] = front_backup.name
@@ -211,7 +269,7 @@ def run(args):
             if record.get('front_backup'):
                 front.run(argparse.Namespace(revision=None, apply=False, rollback=record['front_backup']))
             restore_collector(backup, record)
-            print('Release failed: previous collector restored. Timer resumes automatically.', flush=True)
+            print('Release failed: previous collector restored. Timer restart follows the provider cooldown check.', flush=True)
             raise
     print(f'Release LIVE: {args.revision}. Configuration and generated-data paths preserved.')
 
