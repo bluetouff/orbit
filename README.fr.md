@@ -20,7 +20,7 @@ Un collecteur Python, limité à la bibliothèque standard, récupère les donn�
 
 Le navigateur contacte uniquement la même origine. Aucune clé API, police distante, publicité ou bibliothèque tierce n’est nécessaire côté client. Favoris, réglages et langue restent dans le stockage local du navigateur. Les journaux techniques du serveur sont décrits dans les [mentions de confidentialité](https://orbit.l0g.fr/legal/).
 
-CoinGecko conserve la collecte crypto actuelle, avec un cache minimal de 60 secondes. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
+Le profil Demo collecte jusqu’à 250 cryptos toutes les 5 minutes et le contexte global CoinGecko toutes les heures. LunarCrush et FRED apportent un contexte séparé, lorsqu’il est disponible. Chaque flux conserve son état et ses dates. Un échec ne produit jamais de prix de remplacement.
 
 ## Aperçu local
 
@@ -48,7 +48,7 @@ node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Les suites navigateur utilisent une installation existante de Playwright : `tests/browser.cjs`, `tests/experience-browser.cjs`, `tests/crypto-only-browser.cjs` et `tests/docs-browser.cjs`. Démarrer l’aperçu auparavant. La suite crypto vérifie aussi l’exclusion des anciens tokens. Les données synthétiques sont réservées aux tests isolés des erreurs et des protections.
+Les suites navigateur utilisent une installation existante de Playwright : `tests/browser.cjs`, `tests/experience-browser.cjs`, `tests/crypto-only-browser.cjs`, `tests/docs-browser.cjs` et `tests/outage-browser.cjs`. Démarrer l’aperçu auparavant. La suite crypto vérifie aussi l’exclusion des anciens tokens. Les données synthétiques sont réservées aux tests isolés des erreurs et des protections.
 
 Avant publication, appliquer les contrôles de [SECURITY.md](SECURITY.md), dont le scan de secrets du répertoire de travail et de l’historique Git complet.
 
@@ -65,7 +65,7 @@ En cas de réponse HTTP 429 de CoinGecko, le collecteur diffère tous les appels
 les passages du timer ; les prix et leurs dates de collecte réussie restent
 inchangés. Un nouvel instantané peut publier l’échec et actualiser les autres
 sources. Les appels CoinGecko sont espacés d’au moins deux secondes ; les pages
-crypto sont mises en cache 60 secondes par défaut (`ORBIT_MARKETS_REFRESH_SEC`).
+crypto sont mises en cache 5 minutes avec le profil Demo, 60 secondes avec les anciens réglages sans profil.
 Un échec de page conserve l’univers crypto précédent au complet. Le fichier
 privé de temporisation ne contient qu’une date de reprise et un compteur, hors du webroot et
 ignorés par Git. Le [runbook](RUNBOOK.md#coingecko-http-429-recovery) précise les
@@ -73,4 +73,31 @@ attentes bornées du déploiement et la reprise après restauration.
 
 Les pages crypto sont publiées atomiquement dès leur collecte complète, avant les requêtes sociales, macro et les logos. Une seconde publication complète le contexte sans changer les dates des prix ni de la collecte crypto.
 
-Le déploiement arrête et désactive l’ancien timer Kraken, puis retire son service et son collecteur. La cadence crypto et le fichier de secrets sont conservés. Les anciens tokens sont exclus des données publiées et du navigateur, y compris à partir d’un cache. Les caches privés devenus inutiles restent hors de la racine web et ne sont plus lus. Le retour arrière restaure les fichiers et l’état précédent des unités. Après activation, `python3 scripts/verify_collection.py` vérifie deux renouvellements crypto et l’absence de tokens, en lisant seulement le site public.
+Le déploiement arrête et désactive l’ancien timer Kraken, puis retire son service et son collecteur. Le timer et le fichier de secrets sont conservés. Le profil Demo règle séparément la cadence et la taille de l’univers. Les anciens tokens sont exclus des données publiées et du navigateur, y compris à partir d’un cache. Les caches privés devenus inutiles restent hors de la racine web et ne sont plus lus. Le retour arrière restaure les fichiers et l’état précédent des unités. Après activation, `python3 scripts/verify_collection.py` vérifie deux renouvellements crypto et l’absence de tokens, en lisant seulement le site public.
+
+Lorsqu’un flux de marché est indisponible ou périmé, les prix et performances ne
+sont plus présentés comme actuels : les tuiles deviennent neutres et les valeurs
+sont indisponibles. Le panneau des sources affiche le code HTTP connu. Après un
+refus 401/403, le flux concerné attend au moins 15 minutes avant une nouvelle
+tentative, davantage si le fournisseur le demande. Les dates d’origine et la
+cadence des collectes réussies sont conservées.
+
+Le profil gratuit s’active avec `--demo-250` lors du déploiement décrit dans le
+[runbook](RUNBOOK.md#free-demo-profile-and-outage-recovery). Il utilise la clé
+Demo existante sans la recopier. Le fichier `/opt/orbit/collection.profile` ne
+contient que le nom du profil ; il est inclus dans le retour arrière.
+
+Le rythme nominal représente 9 672 appels sur 31 jours, avant les appels
+manuels ou supplémentaires, pour un [quota Demo de 10 000 appels mensuels](https://www.coingecko.com/en/api/pricing).
+Un compteur privé réserve chaque appel avant son envoi, échecs compris, et
+bloque les appels au plafond jusqu’au mois UTC suivant. Il ne connaît que les
+appels de cette installation depuis son activation, pas ceux d’autres applications
+ni la consommation antérieure de la clé. Un compteur corrompu bloque la collecte.
+
+Le profil exige une collecte réussie de moins de 7 minutes, ce qui laisse
+2 minutes de tolérance au-delà de l’intervalle prévu de 5 minutes. Chaque prix
+doit être daté de moins de 10 minutes ; sinon il reste indisponible, sans
+couleur de performance ni signal. L’ancien profil conserve son seuil de
+3 minutes. Le déploiement exige au moins 90 % de prix récents, Bitcoin compris,
+et au moins 20 actifs. Les favoris hors du nouvel univers restent enregistrés
+et sont signalés comme indisponibles.

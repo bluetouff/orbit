@@ -39,7 +39,7 @@ class ProviderBoundaryTests(unittest.TestCase):
 
     def test_coingecko_keys_use_headers_and_never_query_strings(self):
         for tier in ("demo", "pro"):
-            with patch.object(b, "CG_TIER", tier), patch.object(b, "CG_KEY", "synthetic-test-only"), patch.object(b, "fetch", return_value=[]) as request:
+            with tempfile.TemporaryDirectory() as directory, patch.object(b, 'OUT_DIR', directory), patch.object(b, "CG_TIER", tier), patch.object(b, "CG_KEY", "synthetic-test-only"), patch.object(b, "fetch", return_value=[]) as request:
                 b.cg("coins/markets", {"page": 1})
             self.assertNotIn("synthetic-test-only", request.call_args.args[0])
             self.assertEqual(request.call_args.kwargs["headers"], {f"x-cg-{tier}-api-key": "synthetic-test-only"})

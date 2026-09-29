@@ -4,6 +4,27 @@ const C = require('../web/core.js');
 
 // Synthetic boundary fixtures only. Never served as application data.
 const stamp = '2026-01-01T00:00:00Z', now = Date.parse(stamp);
+
+test('Demo profile enforces collection, observation and missing-date boundaries independently',()=>{
+  const data=raw();
+  data.status={coingecko_markets:{ok:true,fetched_at:stamp,policy:'demo-250-v1'},coingecko_global:{ok:true,fetched_at:stamp,policy:'demo-250-v1'}};
+  data.coins.forEach(c=>{c.last_updated=stamp;});
+  const s=C.normalizeSnapshot(data),c=s.coins[0];
+  assert.equal(C.quoteState(s,c,now+300000).usable,true);
+  assert.equal(C.analyze(s,'24h',now+300000).byId.get(c.id).available,true);
+  assert.equal(C.sourceState(s,'coingecko_markets',now+420000).usable,true);
+  assert.equal(C.sourceState(s,'coingecko_markets',now+420001).usable,false);
+  s.status.coingecko_markets.fetched_at=new Date(now+600000).toISOString();
+  assert.equal(C.quoteState(s,c,now+600000).usable,true);
+  assert.equal(C.quoteState(s,c,now+600001).usable,false);
+  c.last_updated=null;
+  assert.equal(C.quoteState(s,c,now+600000).usable,false);
+  assert.equal(C.analyze(s,'24h',now+600000).byId.get(c.id).available,false);
+  assert.equal(C.sourceState(s,'coingecko_global',now+3600000).usable,true);
+  assert.equal(C.sourceState(s,'coingecko_global',now+3720001).usable,false);
+  s.status.coingecko_markets={ok:true,fetched_at:stamp,ttl:86400,policy:'unknown'};
+  assert.equal(C.sourceState(s,'coingecko_markets',now+180001).usable,false);
+});
 function raw(count=40) {
   return {snapshot:stamp,coins:Array.from({length:count},(_,i)=>({
     id:'asset-'+i,symbol:'a'+i,name:'Test asset '+i,current_price:1,market_cap:1000,total_volume:20+i,
@@ -200,4 +221,12 @@ test('retired favorite IDs are removed on import without losing unavailable cryp
   const ids=['bitcoin','apple-xstock','kraken-aaoix','unavailable-crypto'];
   assert.deepEqual(C.importWatchlist(JSON.stringify({version:1,coins:ids})).coins,['bitcoin','unavailable-crypto']);
   assert.deepEqual(C.mergeWatchlist(ids,['ethereum']),['bitcoin','unavailable-crypto','ethereum']);
+});
+
+test('provider HTTP status is numeric, bounded and cannot carry response text',()=>{
+  for(const [input,expected] of [[403,403],[429,429],[401,401],['403',null],[true,null],[399,null],[600,null],[403.1,null],['<script>',null]]){
+    const r=raw(1);r.status={coingecko_markets:{ok:false,http_status:input,body:'private upstream text'}};
+    const status=C.normalizeSnapshot(r).status.coingecko_markets;
+    assert.equal(status.http_status,expected);assert.equal(status.body,undefined);
+  }
 });

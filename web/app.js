@@ -27,6 +27,7 @@ function coins(){return state.snapshot?.coins||[];}
 function byId(id){return coins().find(c=>c.id===id);}
 function sourceCoins(){return state.view==='market'?coins().slice(0,100):[...state.selected].map(byId).filter(Boolean);}
 function mapCoins(){return state.onboarding&&!state.selected.size?['bitcoin','ethereum','solana','chainlink','uniswap','aave'].map(byId).filter(Boolean):sourceCoins();}
+function currentReturn(c,tf=state.settings.tf){return C.quoteState(state.snapshot,c).usable?c[C.TF[tf]]:null;}
 function eventsFor(c){return state.analysis?.byId.get(c.id);}
 function toggleCoin(id){
   if(!C.ID.test(id))return;
@@ -84,7 +85,11 @@ function renderSources(){
     heading.append(el('b','',name),el('span','source-state '+s.kind,s.kind==='current'?'Collection current':s.kind));
     row.append(heading,el('span','source-time',s.stamp?t('Collected {age}',{age:age(s.age)}):'Collection time unavailable'));
     row.title=t('Collected {date}',{date:date(s.stamp)});
-    const retry=state.snapshot?.status?.[key]?.retry_at;
+    const status=state.snapshot?.status?.[key],http=status?.http_status;
+    if(key==='coingecko_markets'&&status?.policy==='demo-250-v1')row.append(el('span','source-observation','Collection every 5 min · up to 250 cryptos'));
+    if(!s.usable&&status?.error==='CoinGeckoBudgetExceeded')row.append(el('span','source-observation','Monthly collection budget reached'));
+    if(!s.usable&&http)row.append(el('span','source-observation',t(http===401||http===403?'Provider access refused (HTTP {code})':'Provider error (HTTP {code})',{code:http})));
+    const retry=status?.retry_at;
     if(!s.usable&&retry)row.append(el('span','source-observation',t('Provider pause · retry after {date}',{date:date(retry)})));
     if(key==='fred'){
       const m=state.snapshot?.macro;
@@ -138,7 +143,7 @@ function renderSignals(){
 }
 function filteredCoins(){return mapCoins().filter(c=>{
   if(state.onboarding)return true;
-  const p=c[C.TF[state.settings.tf]],r=eventsFor(c);
+  const p=currentReturn(c),r=eventsFor(c);
   return state.settings.filter==='all'||state.settings.filter==='gainers'&&p!=null&&p>0||state.settings.filter==='losers'&&p!=null&&p<0||state.settings.filter==='divergence'&&r?.divergence!=null||state.settings.filter==='anomaly'&&r?.events.some(e=>e.kind!=='divergence');
 });}
 function drawMap(){cancelAnimationFrame(canvasFrame);canvasFrame=requestAnimationFrame(paintMap);}
@@ -146,9 +151,9 @@ function paintMap(){
   const stage=$('stage'),w=stage.clientWidth,h=stage.clientHeight,dpr=Math.min(devicePixelRatio||1,2);
   if(w<=0||h<=0)return;
   canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
-  const list=filteredCoins(),max=Math.max(1,...list.map(c=>Math.abs(c[C.TF[state.settings.tf]]||0)));
+  const list=filteredCoins(),max=Math.max(1,...list.map(c=>Math.abs(currentReturn(c)||0)));
   // Keep selection order stable. Only areas change with the chosen metric.
-  rects=C.squarify(list.map(c=>({id:c.id,coin:c,value:state.settings.metric==='perf'?.12+.88*Math.abs(c[C.TF[state.settings.tf]]||0)/max:Math.max(1,c[state.settings.metric]||1)})),{x:0,y:0,w,h});
+  rects=C.squarify(list.map(c=>({id:c.id,coin:c,value:!C.quoteState(state.snapshot,c).usable?1:state.settings.metric==='perf'?.12+.88*Math.abs(currentReturn(c)||0)/max:Math.max(1,c[state.settings.metric]||1)})),{x:0,y:0,w,h});
   const hits=$('tileButtons'),focused=document.activeElement?.dataset?.tile;
   hits.replaceChildren();$('mapMessage').hidden=!!list.length;
   if(!list.length){
@@ -161,8 +166,9 @@ function paintMap(){
   for(const r of rects){
     paintTile(r);
     const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;
-    const p=r.coin[C.TF[state.settings.tf]],events=eventsFor(r.coin)?.events||[];
+    const p=currentReturn(r.coin),events=eventsFor(r.coin)?.events||[];
     b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
+    b.dataset.current=String(C.quoteState(state.snapshot,r.coin).usable);
     b.style.left=r.x+'px';b.style.top=r.y+'px';b.style.width=r.w+'px';b.style.height=r.h+'px';
     b.addEventListener('pointerenter',()=>showTooltip(r));b.addEventListener('pointerleave',hideTooltip);b.addEventListener('focus',()=>showTooltip(r));b.addEventListener('blur',hideTooltip);
     b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b);buttons[(index+delta+buttons.length)%buttons.length]?.focus();}});
@@ -180,12 +186,12 @@ function logo(c){
 function paintTile(r){
   const x=r.x+2,y=r.y+2,w=Math.max(0,r.w-4),h=Math.max(0,r.h-4);
   if(w<1||h<1)return;
-  const c=r.coin,p=c[C.TF[state.settings.tf]],result=eventsFor(c),strength=Math.min(Math.abs(p||0)/12,1);
+  const c=r.coin,p=currentReturn(c),result=eventsFor(c),strength=Math.min(Math.abs(p||0)/12,1);
   ctx.save();ctx.beginPath();ctx.roundRect(x,y,w,h,Math.min(6,w/2,h/2));ctx.clip();
   ctx.fillStyle=p==null?'#24282c':p>=0?`hsl(154 40% ${23+strength*13}%)`:`hsl(354 39% ${25+strength*13}%)`;ctx.fillRect(x,y,w,h);
   if(result?.events.length){ctx.strokeStyle=result.divergence!=null?'#85d8ed':'#f7d877';ctx.lineWidth=4;ctx.strokeRect(x+1,y+1,w-2,h-2);}
   const img=logo(c),badge=result?.events.length&&Math.min(w,h)>76?22:0;
-  const content=C.tileContent(w,h-badge,!!img),text=p==null?'N/A':pct(p);
+  const content=C.tileContent(w,h-badge,!!img),text=p==null?t('Unavailable'):pct(p);
   let fs=content.font;
   ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
   const measured=ctx.measureText(text).width;if(measured>w-content.pad*2)fs*=Math.max(0,w-content.pad*2)/measured;
@@ -195,7 +201,7 @@ function paintTile(r){
   if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
   ctx.restore();
 }
-function showTooltip(r){const node=$('tileTooltip');node.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(r.coin[C.TF[state.settings.tf]]);node.hidden=false;node.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-node.offsetWidth-8))+'px';node.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-node.offsetHeight-8))+'px';}
+function showTooltip(r){const node=$('tileTooltip');node.textContent=r.coin.name+' · '+r.coin.symbol.toUpperCase()+' · '+pct(currentReturn(r.coin));node.hidden=false;node.style.left=Math.max(8,Math.min(r.x+8,$('stage').clientWidth-node.offsetWidth-8))+'px';node.style.top=Math.max(8,Math.min(r.y+8,$('stage').clientHeight-node.offsetHeight-8))+'px';}
 function hideTooltip(){$('tileTooltip').hidden=true;}
 function renderChoosers(){
   renderChoices('welcomeResults',$('welcomeSearch').value,12,false);renderChoices('manageResults',$('manageSearch').value,manageLimit,$('selectedOnly').checked);renderSelection();
@@ -209,8 +215,9 @@ function renderChoices(target,query,limit,onlySelected){
   for(const c of matching.slice(0,limit)){
     const selected=state.selected.has(c.id),row=button('', 'coin-choice',()=>toggleCoin(c.id));row.dataset.coin=c.id;row.setAttribute('aria-pressed',String(selected));
     const identity=el('span','coin-identity');identity.append(el('b','',c.name,false),el('small','',c.symbol.toUpperCase(),false));
-    const values=el('span','coin-values');values.append(el('span','',price(c.current_price)));
-    values.append(el('small',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])));
+    const live=C.quoteState(state.snapshot,c).usable,value=currentReturn(c);
+    const values=el('span','coin-values');values.append(el('span','',price(live?c.current_price:null)));
+    values.append(el('small',value==null?'muted':value>=0?'up':'down',pct(value)));
     row.append(coinImage(c),identity,values,icon(selected?'check':'plus'));row.setAttribute('aria-label',t(selected?'Remove {name}':'Add {name}',{name:c.name}));container.append(row);
   }
   if(!matching.length)container.append(el('p','empty-description',state.loading?'Loading assets...':!state.snapshot?'Market data is unavailable.':onlySelected?'No selected assets match.':'No matching asset in the current feed.'));
@@ -292,7 +299,8 @@ function renderAsset(){
   const c=byId(state.activeCoin);if(!c){$('assetContent').replaceChildren(el('p','', 'This asset is no longer in the current snapshot.'));return;}
   const identity=$('assetIdentity');identity.replaceChildren(coinImage(c));const name=el('div');name.append(el('h2','',c.name,false),el('span','muted',c.symbol.toUpperCase(),false));name.querySelector('h2').id='assetTitle';identity.append(name);
   const body=$('assetContent');body.replaceChildren();
-  const head=el('div','asset-price'),quote=el('div','asset-quote');quote.append(el('b','',price(c.current_price)),el('span',c[C.TF[state.settings.tf]]>=0?'up':'down',pct(c[C.TF[state.settings.tf]])+' · '+t(state.settings.tf.toUpperCase())));
+  const live=C.quoteState(state.snapshot,c).usable,value=currentReturn(c);
+  const head=el('div','asset-price'),quote=el('div','asset-quote');quote.append(el('b','',price(live?c.current_price:null)),el('span',value==null?'muted':value>=0?'up':'down',pct(value)+' · '+t(state.settings.tf.toUpperCase())));
   const fav=button('','icon-button',()=>toggleCoin(c.id));fav.id='assetFavorite';fav.title=t(state.selected.has(c.id)?'Remove from watchlist':'Add to watchlist');fav.setAttribute('aria-label',fav.title);fav.setAttribute('aria-pressed',String(state.selected.has(c.id)));fav.append(icon('star'));head.append(quote,fav);body.append(head);
   const tabs=el('div','asset-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',t('Asset details'));
   for(const [id,label] of [['signals','Signals'],['market','Market data']]){
@@ -304,12 +312,12 @@ function renderAsset(){
   const signals=renderAssetSignals(c),market=el('section','asset-market');
   for(const [id,pane] of [['signals',signals],['market',market]]){pane.id='assetPane-'+id;pane.setAttribute('role','tabpanel');pane.setAttribute('aria-labelledby','assetTab-'+id);pane.tabIndex=0;body.append(pane);}
   market.append(el('p','detail-date',(c.last_updated?t('Price observed {date}',{date:date(c.last_updated)}):t('Price observation time unavailable'))+t(' · snapshot collected {date}',{date:date(C.sourceState(state.snapshot,'coingecko_markets').stamp)})));
-  if(c.spark.length>1){const chart=el('canvas','spark');chart.setAttribute('role','img');chart.setAttribute('aria-label',t('7-day price history'));market.append(chart,el('p','detail-date','7-day price history · CoinGecko'));}
-  const performance=el('div','detail-grid');for(const tf of Object.keys(C.TF))performance.append(metric(tf.toUpperCase(),pct(c[C.TF[tf]])));market.append(performance);
+  if(live&&c.spark.length>1){const chart=el('canvas','spark');chart.setAttribute('role','img');chart.setAttribute('aria-label',t('7-day price history'));market.append(chart,el('p','detail-date','7-day price history · CoinGecko'));}
+  const performance=el('div','detail-grid');for(const tf of Object.keys(C.TF))performance.append(metric(tf.toUpperCase(),pct(currentReturn(c,tf))));market.append(performance);
   const social=C.sourceState(state.snapshot,'lunarcrush');
   market.append(el('h3','detail-subtitle','Social context'));
   market.append(el('p','muted',social.usable&&c.galaxy_score!==null?t('Galaxy Score {score}/100{sentiment} · LunarCrush, {date}. Symbol-based match; indicative only.',{score:c.galaxy_score,sentiment:c.sentiment!==null?t(' · sentiment {value}%',{value:c.sentiment}):'',date:date(social.stamp)}):'LunarCrush data unavailable for this asset.'));
-  const metrics=el('div','detail-grid');metrics.append(metric('Market cap',big(c.market_cap)),metric('24H volume',big(c.total_volume)),metric('All-time high',price(c.ath)),metric('Circulating supply',c.circulating_supply==null?'Unavailable':new Intl.NumberFormat(locale(),{notation:'compact'}).format(c.circulating_supply)));market.append(metrics);
+  const metrics=el('div','detail-grid');metrics.append(metric('Market cap',big(live?c.market_cap:null)),metric('24H volume',big(live?c.total_volume:null)),metric('All-time high',price(live?c.ath:null)),metric('Circulating supply',!live||c.circulating_supply==null?'Unavailable':new Intl.NumberFormat(locale(),{notation:'compact'}).format(c.circulating_supply)));market.append(metrics);
   const link=el('a','external-link','View on CoinGecko');link.id='assetExternalLink';link.href='https://www.coingecko.com/en/coins/'+encodeURIComponent(c.id);link.target='_blank';link.rel='noopener noreferrer';link.append(icon('external-link'));market.append(link);
   selectAssetTab(state.assetTab);$('assetDialog').scrollTop=scrollTop;
   if(restoreFocus)$(restoreFocus)?.focus({preventScroll:true});

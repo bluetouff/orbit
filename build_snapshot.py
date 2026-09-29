@@ -14,6 +14,26 @@ import calendar, datetime, json, math, os, re, ssl, sys, time, urllib.request, u
 from collections import Counter
 from email.utils import parsedate_to_datetime
 import tempfile
+import fcntl
+import stat
+
+
+def collection_profile(path):
+    """Optional administrator-owned profile beside the installed collector; no keys."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('Invalid collection profile')
+        body = stream.read(64)
+    if body != b'demo-250-v1\n':
+        raise ValueError('Unknown collection profile')
+    return 'demo-250-v1'
+
+
+PROFILE = collection_profile(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'collection.profile'))
 
 
 def env_int(name, default, lo, hi):
@@ -49,6 +69,11 @@ MAX_BYTES  = env_int("ORBIT_MAX_BYTES", 40 * 1024 * 1024, 1024 * 1024, 80 * 1024
 CG_TIER = os.environ.get("CG_API_TIER", "none").lower()
 CG_KEY  = os.environ.get("CG_API_KEY", "").strip()
 CG_BASE = "https://pro-api.coingecko.com/api/v3" if CG_TIER == "pro" else "https://api.coingecko.com/api/v3"
+if PROFILE == 'demo-250-v1':
+    # Explicit deployment choice, overriding old non-secret cadence settings.
+    CG_TIER, CG_BASE = 'demo', 'https://api.coingecko.com/api/v3'
+    TOP, SPARK_TOP, LOGO_MAX = 250, min(SPARK_TOP, 250), min(LOGO_MAX, 250)
+    MARKETS_REFRESH_SEC, GLOBAL_REFRESH_SEC = 300, 3600
 LUNAR_KEY = os.environ.get("LUNARCRUSH_API_KEY", "").strip()
 FRED_KEY  = os.environ.get("FRED_API_KEY", "").strip()
 FRED_SERIES = {"us10y": "DGS10", "usd": "DTWEXBGS"}
@@ -81,6 +106,72 @@ class CoinGeckoCooldown(Exception):
     def __init__(self, retry_at):
         self.retry_at = retry_at
         super().__init__('CoinGecko requests deferred')
+
+
+class CoinGeckoBudgetExceeded(CoinGeckoCooldown):
+    """Local Demo request budget exhausted until the next UTC calendar month."""
+
+
+def reserve_demo_request():
+    """Reserve before sending, including failed requests; serialize all processes.
+
+    Only Orbit's requests since activation are known, not other key consumers.
+    A corrupt ledger blocks requests instead of silently resetting the budget.
+    """
+    if CG_TIER != 'demo':
+        return
+    lock_path = os.path.join(OUT_DIR, '.coingecko-budget.lock')
+    path = os.path.join(OUT_DIR, '.coingecko-budget.json')
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, 'r+b') as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('Invalid CoinGecko budget lock')
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        now = datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc)
+        month = now.strftime('%Y-%m')
+        state = {'month': month, 'calls': 0}
+        try:
+            source = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            pass
+        else:
+            with os.fdopen(source) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError('Invalid CoinGecko budget state')
+                raw = stream.read(1025)
+            try:
+                state = json.loads(raw) if len(raw) <= 1024 else None
+            except ValueError:
+                state = None
+            if (not isinstance(state, dict) or set(state) != {'month', 'calls'}
+                    or not isinstance(state['month'], str)
+                    or not re.fullmatch(r'[0-9]{4}-(?:0[1-9]|1[0-2])', state['month'])
+                    or state['month'] > month or type(state['calls']) is not int
+                    or not 0 <= state['calls'] <= 10000):
+                raise ValueError('Invalid CoinGecko budget state')
+            if state['month'] != month:
+                state = {'month': month, 'calls': 0}
+        if state['calls'] >= 10000:
+            next_month = (now.replace(day=1) + datetime.timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            raise CoinGeckoBudgetExceeded(int(next_month.timestamp()))
+        state['calls'] += 1
+        target, temporary = tempfile.mkstemp(prefix='.coingecko-budget-', dir=OUT_DIR)
+        try:
+            with os.fdopen(target, 'w') as stream:
+                json.dump(state, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory = os.open(OUT_DIR, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
 
 def rate_limit_path():
@@ -163,6 +254,10 @@ def load_previous():
 
 def status_due(prev, key, ttl):
     st = ((prev.get("status") or {}).get(key) or {})
+    # Access refusals need an operator/provider fix, not one retry per minute.
+    if st.get('ok') is False and st.get('http_status') in (401, 403):
+        if parse_ts(st.get('retry_at')) > time.time():
+            return False
     fetched = parse_ts(st.get("attempted_at") or st.get("fetched_at"))
     return not fetched or fetched > time.time() or (time.time() - fetched) >= ttl
 
@@ -187,6 +282,13 @@ def failed_status(previous, error, ttl, retained):
         status['retry_at'] = datetime.datetime.fromtimestamp(error.retry_at, datetime.timezone.utc).isoformat()
     elif isinstance(error, urllib.error.HTTPError):
         status['http_status'] = error.code
+        if error.code in (401, 403):
+            now = time.time()
+            header = error.headers.get('Retry-After') if error.headers else None
+            delay = max(900, retry_delay(header, 1, now))
+            deadline = min(253402300799, math.ceil(now) + delay)
+            status['retry_at'] = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        error.close()
     return status
 
 
@@ -220,12 +322,15 @@ def cg(path, params):
     state = read_rate_limit()
     if state['retry_at'] > time.time():
         raise CoinGeckoCooldown(state['retry_at'])
+    if CG_TIER in ('demo', 'pro') and not CG_KEY:
+        raise ValueError('Authenticated CoinGecko mode needs a key')
     # Page and global calls used to arrive in the same burst.
     # This never retries a request and does not bypass the shared 429 deadline.
     if _CG_LAST_REQUEST is not None:
         time.sleep(max(0, 2 - (time.monotonic() - _CG_LAST_REQUEST)))
     _CG_LAST_REQUEST = time.monotonic()
     headers = {f"x-cg-{CG_TIER}-api-key": CG_KEY} if CG_KEY and CG_TIER in ("demo", "pro") else None
+    reserve_demo_request()
     try:
         return fetch(f"{CG_BASE}/{path}?{urllib.parse.urlencode(params)}", headers=headers)
     except urllib.error.HTTPError as error:
@@ -429,6 +534,9 @@ def cache_logo(coin):
 
 def publish_snapshot(snapshot):
     """Readers see either complete snapshot; provider dates are never rewritten."""
+    if PROFILE:
+        for key in ('coingecko_markets', 'coingecko_global'):
+            snapshot['status'][key]['policy'] = PROFILE
     tmp = os.path.join(OUT_DIR, "orbit.json.tmp")
     with open(tmp, "w") as f:
         json.dump(snapshot, f, separators=(",", ":"))
@@ -468,7 +576,8 @@ def build():
     prev_status = previous.get("status") or {}
     old_crypto = [dict(c) for c in previous.get('coins', []) if isinstance(c, dict) and not is_removed_asset(c)]
     markets, retained_crypto = [], []
-    if old_crypto and not status_due(previous, 'coingecko_markets', MARKETS_REFRESH_SEC):
+    same_profile = (prev_status.get('coingecko_markets') or {}).get('policy') == PROFILE
+    if old_crypto and same_profile and not status_due(previous, 'coingecko_markets', MARKETS_REFRESH_SEC):
         retained_crypto = old_crypto
         markets_status = mark_reused(prev_status.get('coingecko_markets'), MARKETS_REFRESH_SEC)
     else:
@@ -495,10 +604,10 @@ def build():
         social_status = mark_reused(prev_status.get("lunarcrush"), SOCIAL_REFRESH_SEC)
 
     glob = None
-    if status_due(previous, "coingecko_global", GLOBAL_REFRESH_SEC):
+    if (prev_status.get('coingecko_global') or {}).get('policy') != PROFILE or status_due(previous, "coingecko_global", GLOBAL_REFRESH_SEC):
         try:
             glob = cg("global", {}).get("data")
-            global_status = {"ok": bool(glob), "fetched_at": utc_now()}
+            global_status = {"ok": bool(glob), "fetched_at": utc_now(), "ttl": GLOBAL_REFRESH_SEC}
         except Exception as e:
             sys.stderr.write(f"global skip: {type(e).__name__}\n")
             glob = previous.get("global")

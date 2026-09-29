@@ -5,7 +5,7 @@ import json
 import time
 
 from deploy_front import public
-from validate_snapshot import is_crypto
+from validate_snapshot import is_crypto, market_max_age, demo_quotes_current
 
 
 class CollectionError(ValueError):
@@ -29,7 +29,7 @@ def inspect(data, now):
             raise CollectionError(f'{key}: collection unavailable')
         stamp = timestamp(status.get('fetched_at'))
         age = now - stamp
-        maximum = 180
+        maximum = market_max_age(status)
         if not -60 <= age <= maximum:
             raise CollectionError(f'{key}: collection age {age:.0f}s exceeds the release check')
         result[key] = stamp
@@ -38,10 +38,12 @@ def inspect(data, now):
         raise CollectionError('Expected exclusively crypto assets')
     if any('xstock' in key.lower() for key in data.get('status', {})):
         raise CollectionError('Retired source remains in public feed')
+    if data['status']['coingecko_markets'].get('policy') == 'demo-250-v1' and not demo_quotes_current(data, now):
+        raise CollectionError('Insufficient current dated crypto prices')
     return result, len(coins)
 
 
-def verify(timeout=600, interval=30):
+def verify(timeout=900, interval=30):
     deadline = time.monotonic() + timeout
     previous, advances = {}, {'coingecko_markets': 0}
     while True:

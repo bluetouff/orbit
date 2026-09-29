@@ -136,7 +136,7 @@ User traffic is decoupled from data providers:
   self-hosted `/logos/*.png`.
 - Provider call volume depends only on the systemd timer, not on traffic.
 
-With the default settings (`ORBIT_TOP=500`, ~30 s timer), one crypto-market
+Without a collection profile, the legacy settings (`ORBIT_TOP=500`, ~30 s timer) apply. Then one crypto-market
 refresh calls CoinGecko for 2 `coins/markets` pages, cached for 60 s by default. CoinGecko `global` is fetched
 at most every 120 s, LunarCrush at most every 900 s, and FRED at most every
 3600 s. That is at most 2.5 CoinGecko calls per minute on average at rest
@@ -170,7 +170,8 @@ becomes massive, put Cloudflare/Fastly/nginx cache in front of Apache to absorb
 - **Provider cadence**: `OnUnitActiveSec` in the timer (default 30 s wakeup; per-feed caches determine provider calls). The front rereads the JSON roughly every 30 s, with jitter and a
   pause in hidden tabs
   (30-45 seconds in `app.js`).
-- **Crypto TTL**: `ORBIT_MARKETS_REFRESH_SEC` (default 60, bounded 60–180). A failed
+- **Production Demo profile**: up to 250 assets / 300 s market cache / 3600 s global cache. The explicit profile overrides the legacy non-secret settings below.
+- **Legacy crypto TTL**: `ORBIT_MARKETS_REFRESH_SEC` (default 60, bounded 60–180). A failed
   page retains the entire prior crypto universe and its original dates, while
   independent feeds continue. CoinGecko calls are spaced by two seconds.
 - **Publication priority**: new complete crypto pages are published before optional
@@ -281,7 +282,7 @@ outside the web root; the builder never reads the token caches.
 A quiet minute prevents an immediate extra burst after the preceding production
 collection. The existing service collects with its own provider environment.
 The new snapshot must pass the schema validator, contain only crypto assets and
-have a successful crypto collection no older than three minutes before publication.
+have a successful crypto collection within its supported freshness bound before publication (3 minutes for legacy, 7 minutes for Demo). Demo additionally requires at least 90% of prices dated within 10 minutes, including Bitcoin, and at least 20 assets.
 The timer configuration remains unchanged. Before resuming it, including after
 a rollback to a legacy collector, the script honors a recorded provider cooldown.
 It waits at most 30 minutes at this recovery step. A longer or malformed cooldown
@@ -307,14 +308,13 @@ favorites, FR/EN navigation, mobile layout, CSP, no cookies
 and no third-party browser requests. The guide pages require no JavaScript.
 
 After activation, the public check requires two crypto collection renewals
-(up to ten minutes, no provider API calls):
+(up to fifteen minutes, no provider API calls):
 
 ```bash
 python3 scripts/verify_collection.py
 ```
 
-It rejects failed collections, regressing source dates, collections older than
-three minutes and any remaining token or xStocks source. A new file date alone
+It rejects failed collections, regressing source dates, collections beyond their supported freshness bound and any remaining token or xStocks source. Demo also checks original quote dates and coverage. A new file date alone
 cannot pass. Check the retired units are inactive and disabled on the host:
 
 ```bash
@@ -351,8 +351,79 @@ that a market source succeeded.
 The journal contains a bounded status message rather than request details.
 
 Release activation allows at most one delayed retry, exclusively after a
-recorded 429. It waits up to three minutes for that retry and never retries an
-authentication, service or schema failure. Both market feeds must still pass
+recorded 429. It waits up to three minutes (six for Demo, covering its cache) for that retry and never retries an
+authentication, service or schema failure. Crypto collection and dated quote coverage must still pass
 validation before the frontend is activated. On failure the previous collector
 is restored, and its timer cannot bypass the recorded cooldown. An extended
 provider limit remains an operational constraint, not a successful release.
+
+## CoinGecko access refusal (HTTP 401/403)
+
+A recent `snapshot` timestamp does not prove that prices were refreshed. Inspect
+`status.coingecko_markets.ok`, `http_status` and `last_success_at`. A 403 is an
+access refusal, distinct from a 429 rate limit. The UI shows the HTTP code and
+suppresses stale prices, returns and performance colors; original observations
+remain unchanged in the snapshot.
+
+After a 401 or 403, only the failed feed pauses for at least 15 minutes, honoring
+a longer `Retry-After`. Other feeds continue. Successful market collection keeps
+its configured cadence. Do not repeatedly restart the service or bypass the
+provider's access control. Test the configured authentication without printing
+keys, request headers, environment contents or upstream response bodies.
+
+A working Demo key does not make a one-minute 500-asset schedule sustainable:
+check monthly credits as well as per-minute limits before activating it. The
+administrator must choose a supported cadence or plan; credentials must stay in
+the existing protected environment file.
+
+## Free Demo profile and outage recovery
+
+The confirmed incident was `CG_API_TIER=none` with an existing working Demo key:
+unauthenticated market calls returned HTTP 403; the authenticated diagnostic
+returned HTTP 200. The release can activate that key without changing its value:
+
+```bash
+cd /home/bluetouff/orbit
+git pull --ff-only
+sudo python3 scripts/deploy_release.py --revision FULL_40_CHARACTER_SHA --demo-250 --apply
+python3 scripts/verify_collection.py
+```
+
+Run the activation in the existing Zen session. The administrator enters sudo
+personally. Use `&&` between these commands to stop on any failure.
+`--demo-250` allows an unavailable market feed during the initial recovery
+preflight only: the generated public file must still be recent, served entry
+pages must match disk, and all service, path, CSP and revision checks remain.
+Postflight is strict: the market collection must succeed after activation starts,
+with the Demo policy and sufficient recent original price timestamps. A recent
+file alone cannot pass. A failure restores the collector, profile and frontend
+before the timer resumes.
+
+The new root-owned `/opt/orbit/collection.profile` contains only `demo-250-v1`.
+It selects Demo authentication, at most 250 assets, a 300-second market interval
+and a 3600-second global interval. `/etc/orbit/orbit.env` is neither rewritten
+nor copied into the backup; the API key remains there. Other provider settings
+are preserved. Later releases preserve the profile even without `--demo-250`.
+Use the printed activation rollback to remove it and restore prior behavior;
+older rollback manifests that do not track the profile are refused while it exists.
+
+The schedule uses approximately 9,672 calls in 31 days (8,928 market + 744 global),
+before manual/additional calls. [CoinGecko lists 10,000 monthly Demo calls](https://www.coingecko.com/en/api/pricing).
+All Demo requests reserve one entry before the network call in
+`/var/lib/orbit/.coingecko-budget.json`, protected by a process lock. The private
+ledger contains only the UTC month and request count. Failed requests count
+conservatively. At 10,000, CoinGecko requests stop until the next UTC month;
+the interface reports the budget and data unavailability.
+
+The ledger starts when enabled and cannot know previous consumption or usage
+by other applications using this key. Check the provider dashboard for the
+account total. Never delete the ledger to retry: corrupt, future-dated or unsafe
+state blocks requests. Keep it when deploying or rolling back. The guard limits
+Orbit requests; it does not guarantee upstream availability or remaining credits.
+
+Demo collection becomes stale after 420 seconds (300-second cadence plus
+120 seconds of scheduling tolerance). Individual prices require provider dates
+within 600 seconds. Global context expires after 3720 seconds. Arbitrary `ttl`
+values in a snapshot cannot extend these fixed policy limits. Failed feeds
+remain unavailable immediately, regardless of age. Old quotes keep their dates
+and are never used for colors, returns, filters or signals.

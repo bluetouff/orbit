@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import json
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,7 +9,8 @@ from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('deploy', Path(__file__).parents[1] / 'scripts/deploy_front.py')
 d = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(d)
+with patch.object(sys, 'path', [str(Path(__file__).parents[1] / 'scripts'), *sys.path]):
+    spec.loader.exec_module(d)
 REV = 'a' * 40
 
 
@@ -194,6 +196,15 @@ class DeployTests(unittest.TestCase):
         with patch.object(d, 'public', return_value=(json.dumps(data).encode(), {})):
             with self.assertRaisesRegex(ValueError, 'not current'):
                 d.check_snapshot()
+
+    def test_recovery_allows_only_recent_file_and_does_not_weaken_postflight(self):
+        stamp = d.dt.datetime.now(d.dt.timezone.utc).isoformat()
+        data = {'snapshot': stamp, 'coins': [{'id': 'bitcoin'}], 'status': {'coingecko_markets': {'ok': False, 'fetched_at': '2020-01-01T00:00:00Z'}}}
+        with patch.object(d, 'public', side_effect=lambda path: (json.dumps(data).encode(), {})):
+            d.check_snapshot(allow_unavailable=True)
+            with self.assertRaisesRegex(ValueError, 'unavailable'): d.check_snapshot()
+            data['snapshot'] = '2020-01-01T00:00:00Z'
+            with self.assertRaisesRegex(ValueError, 'not current'): d.check_snapshot(allow_unavailable=True)
 
 
 if __name__ == '__main__':

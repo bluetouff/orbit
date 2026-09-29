@@ -42,7 +42,9 @@ RUNBOOK.md                   detailed deployment procedure
 
 ## Short Version
 
-1. `build_snapshot.py` collects crypto with a 60-second default cache.
+1. The production Demo profile collects up to 250 cryptos every 5 minutes,
+   plus CoinGecko global context hourly. Without a profile, the legacy defaults
+   remain 500 assets and a 60-second market cache.
    Global, LunarCrush and FRED have longer caches. It downloads
    missing logos in bounded batches and atomically writes `orbit.json` into
    `/var/lib/orbit`.
@@ -136,9 +138,11 @@ adds that context without changing the crypto collection or price timestamps.
   use z-scores above 2 for `log10(1 + 1000 * 24h volume / market cap)`.
   Divergences use an absolute price/activity z-score gap above 1.2, in 24H only.
   These heuristics compare assets cross-sectionally, not against their history.
-- Signals stop when market collection age is unknown or exceeds three minutes.
-  Supplied asset observation timestamps are checked separately. Old snapshots
-  without asset timestamps retain an explicit collection-only limitation.
+- Prices, returns, performance colors and signals are suppressed when market
+  collection fails or its age is unknown. The Demo profile allows 7 minutes
+  for collection (5-minute cadence plus scheduling tolerance), and requires
+  individual prices dated within 10 minutes. Legacy profiles keep the strict
+  3-minute boundary and label undated prices as collection-only.
   A malformed supplied timestamp is rejected, not treated as missing.
 - LunarCrush is separate context, never a substitute activity axis. Ambiguous
   symbols are discarded by the builder; remaining symbol matches are indicative.
@@ -217,3 +221,26 @@ collection.
 The private cooldown file contains only numeric transport metadata, is outside
 the web root and is ignored by Git. See [HTTP 429 recovery](RUNBOOK.md#coingecko-http-429-recovery)
 for deployment waiting and rollback behavior.
+
+## Free Demo collection profile
+
+Activate an existing installation with `deploy_release.py --demo-250 --apply`
+plus the exact `--revision` (see [runbook](RUNBOOK.md#free-demo-profile-and-outage-recovery)).
+This selects the existing Demo key without changing or copying the secret file.
+The root-owned `/opt/orbit/collection.profile` contains only `demo-250-v1`.
+Subsequent releases preserve it; the activation backup can restore its absence.
+
+One market request per 5 minutes and one global request per hour represent
+9,672 calls over 31 days, before extra/manual calls, against the
+[Demo allowance of 10,000 monthly calls](https://www.coingecko.com/en/api/pricing).
+The private, locked monthly ledger reserves every Demo request before sending it,
+including failed requests. It stops at 10,000 until the next UTC calendar month.
+It counts only this installation since activation; usage elsewhere or earlier
+with the same key is unknown. Corrupt state blocks requests and requires repair,
+never an automatic budget reset. Provider limits and availability still apply.
+
+Favorites outside the smaller universe remain saved and are labelled unavailable.
+No price is fabricated or redated. Release validation requires a new successful
+collection and at least 90% of the returned prices dated within 10 minutes,
+including Bitcoin, with at least 20 assets. Each older or undated price remains
+unavailable in the interface even when that coverage check passes.

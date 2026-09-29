@@ -157,5 +157,35 @@ class CollectionTests(unittest.TestCase):
             self.assertNotIn('kraken_xstocks', data['status'])
             self.assertEqual(data['status']['coingecko_markets']['ok'], not failed)
 
+    def test_access_refusal_pauses_only_failed_feed_and_keeps_original_dates(self):
+        with patch.object(b, 'cg', side_effect=self.respond): b.build()
+        previous = self.read()
+        self.clock[0] += 70
+        failed_at = self.clock[0]
+        def refused(path, params):
+            if path == 'coins/markets':
+                raise urllib.error.HTTPError('https://example.invalid/?private=redacted', 403, 'private response', {}, None)
+            return self.respond(path, params)
+        with patch.object(b, 'cg', side_effect=refused) as request:
+            b.build()
+            first = self.read()
+            status = first['status']['coingecko_markets']
+            self.assertEqual(status['http_status'], 403)
+            self.assertEqual(b.parse_ts(status['retry_at']), failed_at + 900)
+            self.assertEqual(status['fetched_at'], previous['status']['coingecko_markets']['fetched_at'])
+            self.assertNotIn('private', json.dumps(first))
+            request.reset_mock()
+            self.clock[0] += 70
+            b.build()
+            self.assertEqual([c.args[0] for c in request.call_args_list], ['global'])
+            self.assertTrue(self.read()['status']['coingecko_global']['ok'])
+            self.assertEqual(self.read()['coins'][0]['last_updated'], previous['coins'][0]['last_updated'])
+        self.clock[0] = failed_at + 900
+        with patch.object(b, 'cg', side_effect=self.respond) as request:
+            b.build()
+            self.assertIn('coins/markets', [c.args[0] for c in request.call_args_list])
+        self.assertTrue(self.read()['status']['coingecko_markets']['ok'])
+        self.assertNotIn('retry_at', self.read()['status']['coingecko_markets'])
+
 if __name__ == '__main__':
     unittest.main()

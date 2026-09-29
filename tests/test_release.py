@@ -193,6 +193,61 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '^Unexpected ORBIT_OUT_DIR; inspect paths before release$'):
                 release.check_environment_paths()
 
+    def test_demo_activation_and_failure_restore_profile_without_copying_key(self):
+        env = self.base / 'provider.env'
+        body = 'CG_API_TIER=none\nCG_API_KEY=synthetic-test-only\n'
+        env.write_text(body)
+        args = argparse.Namespace(revision=REV, apply=True, rollback=None, demo_250=True)
+        for fail in (True, False):
+            def collect(**kwargs):
+                self.assertEqual(kwargs, {'require_new': True})
+                self.assertEqual((self.install / 'collection.profile').read_bytes(), release.DEMO_PROFILE)
+                if fail: raise ValueError('fresh quotes missing')
+            with patch.object(release, 'ENV_FILE', env), patch.object(release, 'preflight') as preflight, patch.object(release, 'check_environment_paths'), patch.object(release, 'wait_for_provider'), patch.object(release, 'systemctl'), patch.object(release, 'property_value', return_value=''), patch.object(release, 'collect_for_release', side_effect=collect), patch.object(release.front, 'run'):
+                if fail:
+                    with self.assertRaisesRegex(ValueError, 'fresh quotes missing'): release.run(args)
+                    self.assertFalse((self.install / 'collection.profile').exists())
+                else:
+                    release.run(args)
+                    self.assertEqual((self.install / 'collection.profile').read_bytes(), release.DEMO_PROFILE)
+                preflight.assert_called_once_with(REV, demo=True)
+            self.assertEqual(env.read_text(), body)
+            for file in self.backups.rglob('*'):
+                if file.is_file(): self.assertNotIn(b'synthetic-test-only', file.read_bytes())
+
+    def test_later_release_preserves_profile_and_older_rollback_cannot_ignore_it(self):
+        profile = self.install / 'collection.profile'
+        profile.write_bytes(release.DEMO_PROFILE)
+        self.assertEqual(release.release_body('collection.profile', None), release.DEMO_PROFILE)
+        backup, record = release.create_backup(REV)
+        self.assertEqual(record['files']['collection.profile']['old'], record['files']['collection.profile']['new'])
+        record['files'].pop('collection.profile')
+        with self.assertRaisesRegex(ValueError, 'profile activation backup'): release.check_restore(backup, record)
+
+    def test_demo_requires_existing_nonpro_key_without_exposing_it(self):
+        env = self.base / 'provider.env'
+        with patch.object(release, 'ENV_FILE', env), patch.object(release, 'property_value', return_value=''):
+            for body in ['CG_API_KEY=\n', 'CG_API_TIER=pro\nCG_API_KEY=synthetic-test-only\n', 'CG_API_KEY="unterminated\n']:
+                env.write_text(body)
+                with self.assertRaisesRegex(ValueError, '^Expected an existing Demo key'): release.check_demo_key()
+            env.write_text('CG_API_TIER=none\nCG_API_KEY=synthetic-test-only\n')
+            release.check_demo_key()
+
+    def test_demo_release_rejects_recent_file_and_source_with_old_prices(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        coins = [{'id': 'bitcoin' if i == 0 else f'asset-{i}', 'last_updated': now.isoformat()} for i in range(20)]
+        data = {'snapshot': now.isoformat(), 'coins': coins, 'status': {'coingecko_markets': {'ok': True, 'fetched_at': now.isoformat(), 'policy': 'demo-250-v1'}}}
+        def check(start):
+            release.SNAPSHOT.write_text(json.dumps(data))
+            with patch.object(release.subprocess, 'run', return_value=argparse.Namespace(returncode=0)):
+                release.validate_collected(start, require_new=True)
+        check(now.timestamp() - 1)
+        data['status']['coingecko_markets']['fetched_at'] = (now-dt.timedelta(seconds=10)).isoformat()
+        with self.assertRaisesRegex(release.CollectionNotReady, 'unavailable or stale'): check(now.timestamp() - 1)
+        data['status']['coingecko_markets']['fetched_at'] = now.isoformat()
+        coins[0]['last_updated'] = (now-dt.timedelta(days=1)).isoformat()
+        with self.assertRaisesRegex(release.CollectionNotReady, 'dated crypto prices'): check(now.timestamp() - 1)
+
     def test_rollback_traversal_and_symlink_rejected(self):
         for name in ['../elsewhere', '/tmp/collector-backup']:
             with self.assertRaises(ValueError):

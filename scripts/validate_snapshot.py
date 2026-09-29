@@ -5,6 +5,24 @@ import re
 import sys
 from datetime import datetime
 
+
+def market_max_age(status):
+    # Fixed supported policies only; an arbitrary upstream TTL cannot extend it.
+    return 420 if status.get('policy') == 'demo-250-v1' else 180
+
+
+def demo_quotes_current(data, now):
+    coins = data.get('coins') or []
+    def current(coin):
+        try:
+            stamp = datetime.fromisoformat(coin['last_updated'].replace('Z', '+00:00'))
+            return stamp.tzinfo is not None and -60 <= now - stamp.timestamp() <= 600
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+    return (20 <= len(coins) <= 250
+            and sum(current(c) for c in coins) >= math.ceil(len(coins) * 0.9)
+            and any(c.get('id') == 'bitcoin' and current(c) for c in coins))
+
 COIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$", re.I)
 SYMBOL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,19}$", re.I)
 REQUIRED_NUMS = ("current_price", "market_cap", "total_volume")

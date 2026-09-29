@@ -22,6 +22,7 @@ import tempfile
 import urllib.parse
 import urllib.error
 import urllib.request
+from validate_snapshot import market_max_age, demo_quotes_current
 
 REPO = Path(__file__).resolve().parents[1]
 WEB_ROOT = Path('/var/www/html/orbit')
@@ -127,20 +128,25 @@ def public(path):
         return body, response.headers
 
 
-def check_snapshot():
+def check_snapshot(allow_unavailable=False):
     raw, _ = public('/data.json')
     data = json.loads(raw)
     markets = data.get('status', {}).get('coingecko_markets') or {}
-    if markets.get('ok') is False:
+    if markets.get('ok') is False and not allow_unavailable:
         raise ValueError('Market source is unavailable; do not deploy yet')
-    stamp = markets.get('fetched_at') or data.get('snapshot')
+    stamp = data.get('snapshot') if allow_unavailable else markets.get('fetched_at') or data.get('snapshot')
     parsed = dt.datetime.fromisoformat(stamp.replace('Z', '+00:00'))
     if parsed.tzinfo is None or not data.get('coins') or not isinstance(data['coins'], list):
         raise ValueError('Invalid public snapshot')
     age = (dt.datetime.now(dt.timezone.utc) - parsed).total_seconds()
-    if not -60 <= age <= 180:
+    maximum = 180 if allow_unavailable else market_max_age(markets)
+    if not -60 <= age <= maximum:
         raise ValueError(f'Market snapshot is not current ({age:.0f}s); do not deploy yet')
-    print(f'Public snapshot: {len(data["coins"])} coins, collection age {age:.0f}s')
+    if not allow_unavailable and markets.get('policy') == 'demo-250-v1':
+        if not demo_quotes_current(data, dt.datetime.now(dt.timezone.utc).timestamp()):
+            raise ValueError('Insufficient current dated crypto prices')
+    label = 'file age (recovery preflight only)' if allow_unavailable else 'collection age'
+    print(f'Public snapshot: {len(data["coins"])} coins, {label} {age:.0f}s')
 
 
 def target(root, name):
@@ -163,7 +169,7 @@ def body_hash(body):
     return digest(body) if body is not None else None
 
 
-def preflight(root):
+def preflight(root, allow_unavailable=False):
     if root.is_symlink() or not root.is_dir() or root.resolve() != root.absolute():
         raise ValueError('Expected a real existing web-root directory')
     for name in PAGES:
@@ -183,7 +189,7 @@ def preflight(root):
         for directive in ("script-src 'self'", "connect-src 'self'", "frame-ancestors 'none'"):
             if directive not in csp:
                 raise ValueError('Expected production CSP is missing; inspect Apache first')
-    check_snapshot()
+    check_snapshot(allow_unavailable=allow_unavailable)
 
 
 def atomic_write(file, body):

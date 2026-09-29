@@ -49,7 +49,8 @@
         fetched_at:time(s.fetched_at)!==null?s.fetched_at:null,
         last_success_at:time(s.last_success_at)!==null?s.last_success_at:null,
         retry_at:time(s.retry_at)!==null?s.retry_at:null,
-        ttl:num(s.ttl,1,86400),error:text(s.error,60)};
+        policy:s.policy==='demo-250-v1'?s.policy:null,
+        ttl:num(s.ttl,1,86400),http_status:Number.isInteger(s.http_status)&&s.http_status>=400&&s.http_status<=599?s.http_status:null,error:text(s.error,60)};
     }
     const macro={};
     for (const key of ['usd','us10y']) {
@@ -65,8 +66,9 @@
     const s=snapshot?.status?.[key];
     const stamp=s?.last_success_at || (s?.ok===false?null:s?.fetched_at) || (key==='coingecko_markets'&&!s?snapshot?.snapshot:null);
     const ms=time(stamp), age=ms===null?null:now-ms;
-    // Crypto retains its strict three-minute freshness boundary.
-    const ttl={coingecko_markets:180,coingecko_global:600,lunarcrush:1800,fred:7200}[key];
+    // Explicit supported profile only. Arbitrary provider TTLs grant no extension.
+    const demo=s?.policy==='demo-250-v1';
+    const ttl={coingecko_markets:demo?420:180,coingecko_global:demo?3720:600,lunarcrush:1800,fred:7200}[key];
     let kind='current';
     if (s?.enabled===false) kind='disabled';
     else if (s?.ok===false) kind='unavailable';
@@ -80,26 +82,27 @@
     const sd=n?Math.sqrt(values.reduce((a,b)=>a+(b-mean)**2,0)/n):null;
     return {n,mean,sd};
   }
-  function observation(c,now) {
+  function observation(c,now,maximum=180000) {
     if(c.observationInvalid) return 'invalid';
     if(!c.last_updated) return 'unknown';
     const stamp=time(c.last_updated);
     if(stamp===null) return 'invalid';
-    return now-stamp>=-60000&&now-stamp<=180000?'current':'stale';
+    return now-stamp>=-60000&&now-stamp<=maximum?'current':'stale';
   }
   function quoteState(snapshot,c,now=Date.now()) {
-    const source=sourceState(snapshot,assetSource(c),now),observed=observation(c,now);
+    const demo=snapshot?.status?.coingecko_markets?.policy==='demo-250-v1';
+    const source=sourceState(snapshot,assetSource(c),now),observed=observation(c,now,demo?600000:180000);
     const stamp=time(c.last_updated),age=stamp===null?null:now-stamp;
-    return {source,observed,kind:observed,age,usable:source.usable&&['current','unknown'].includes(observed)};
+    return {source,observed,kind:observed,age,usable:source.usable&&(observed==='current'||!demo&&observed==='unknown')};
   }
-  function relativeBitcoin(c,btc,key,current,now) {
+  function relativeBitcoin(c,btc,key,current,now,maximum=180000,requireDate=false) {
     const result={value:null,reason:null,dated:false};
     if(!current) result.reason='Market data is not current';
     else if(!btc) result.reason='Bitcoin is absent from the snapshot';
-    else if([c,btc].some(coin=>!['current','unknown'].includes(observation(coin,now)))) result.reason='Asset or Bitcoin observation is invalid or stale';
+    else if([c,btc].some(coin=>!(requireDate?['current']:['current','unknown']).includes(observation(coin,now,maximum)))) result.reason='Asset or Bitcoin observation is invalid or stale';
     else if(!Number.isFinite(c[key])||!Number.isFinite(btc[key])||btc[key]<=-100) result.reason='Comparable returns unavailable';
     else {
-      result.dated=[c,btc].every(coin=>observation(coin,now)==='current');
+      result.dated=[c,btc].every(coin=>observation(coin,now,maximum)==='current');
       if(result.dated&&Math.abs(time(c.last_updated)-time(btc.last_updated))>60000) result.reason='Observation times differ by more than one minute';
       else {
         // Relative wealth ratio, not the percentage-point difference of returns.
@@ -114,13 +117,14 @@
     if(!Object.hasOwn(TF,tf)) tf='24h';
     const coins=snapshot?.coins || [],key=TF[tf]||TF['24h'];
     const current=sourceState(snapshot,'coingecko_markets',now).usable;
-    const observed=c=>['current','unknown'].includes(observation(c,now));
+    const demo=snapshot?.status?.coingecko_markets?.policy==='demo-250-v1',maximum=demo?600000:180000;
+    const observed=c=>(demo?['current']:['current','unknown']).includes(observation(c,now,maximum));
     const crypto=coins.filter(c=>!isXstock(c));
     const peers=crypto.filter(c=>observed(c)&&Number.isFinite(c[key]));
     const price=stats(peers.map(c=>c[key]));
     const sorted=peers.map(c=>c[key]).sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);
     const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:crypto.length,
-      dated:peers.filter(c=>observation(c,now)==='current').length,median:null,up:null,down:null,flat:null};
+      dated:peers.filter(c=>observation(c,now,maximum)==='current').length,median:null,up:null,down:null,flat:null};
     if(market.available) {
       market.median=sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
       market.up=sorted.filter(v=>v>0).length;market.down=sorted.filter(v=>v<0).length;market.flat=sorted.length-market.up-market.down;
@@ -132,7 +136,7 @@
     const byId=new Map();
     for(const c of coins) {
       const result={events:[],priceZ:null,activityZ:null,divergence:null,score:0,available:false,reason:null,
-        observation:observation(c,now),relativeBTC:isXstock(c)?{value:null,reason:'xStocks are outside the crypto reference',dated:false}:relativeBitcoin(c,btc,key,current,now),medianGap:null};
+        observation:observation(c,now,maximum),relativeBTC:isXstock(c)?{value:null,reason:'xStocks are outside the crypto reference',dated:false}:relativeBitcoin(c,btc,key,current,now,maximum,demo),medianGap:null};
       byId.set(c.id,result);
       if(isXstock(c)) {result.reason='xStocks are outside the crypto reference';continue;}
       if(!current) {result.reason='Market data is not current';continue;}

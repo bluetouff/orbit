@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guarded collector + frontend release, run by the administrator on the host.
 
-Preserves provider environment and the crypto service and timer. Retires xStocks.
+Preserves secrets and service hardening; optionally activates the free Demo profile.
 Default: read-only checks. --apply and --rollback require root.
 """
 import argparse
@@ -21,7 +21,8 @@ import deploy_front as front
 INSTALL = Path('/opt/orbit')
 SNAPSHOT = Path('/var/lib/orbit/orbit.json')
 ENV_FILE = Path('/etc/orbit/orbit.env')
-FILES = {'build_snapshot.py': 'build_snapshot.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': None}
+FILES = {'build_snapshot.py': 'build_snapshot.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': None, 'collection.profile': None}
+DEMO_PROFILE = b'demo-250-v1\n'
 UNIT_DIR = Path('/etc/systemd/system')
 KRAKEN_SERVICE = 'orbit-xstocks.service'
 KRAKEN_TIMER = 'orbit-xstocks.timer'
@@ -55,7 +56,7 @@ def read_installed(name):
     return file.read_bytes() if file.exists() else None
 
 
-def preflight(revision):
+def preflight(revision, demo=False):
     if not revision or not front.SHA.fullmatch(revision) or front.git('rev-parse', 'HEAD') != revision:
         raise ValueError('Checkout must match the full requested revision')
     if front.git('status', '--porcelain'):
@@ -81,13 +82,21 @@ def preflight(revision):
         raise ValueError('Collector timer must already be active')
     if not SNAPSHOT.is_file() or SNAPSHOT.is_symlink():
         raise ValueError('Expected existing snapshot')
-    front.preflight(front.WEB_ROOT)
+    profile = read_installed('collection.profile')
+    if profile not in (None, DEMO_PROFILE):
+        raise ValueError('Unknown installed collection profile')
+    front.preflight(front.WEB_ROOT, allow_unavailable=demo)
     print('Preflight OK: clean revision, hardened service, active timer, public front and snapshot.')
 
 
 def check_environment_paths():
     # Only check output paths; never print or copy provider configuration.
     values = {}
+    # EnvironmentFile takes precedence over unit-level Environment assignments.
+    for assignment in shlex.split(property_value(SERVICE, 'Environment')):
+        key, separator, value = assignment.partition('=')
+        if separator and key in ('ORBIT_OUT_DIR', 'ORBIT_LOGO_DIR'):
+            values[key] = value
     if ENV_FILE.exists():
         if ENV_FILE.is_symlink():
             raise ValueError('Unexpected environment symlink')
@@ -95,14 +104,37 @@ def check_environment_paths():
             key, separator, value = line.partition('=')
             if separator and key.strip() in ('ORBIT_OUT_DIR', 'ORBIT_LOGO_DIR'):
                 values[key.strip()] = value.strip().strip('"\'')
-    # Unit-level Environment= overrides must obey the same output contract.
-    for assignment in shlex.split(property_value(SERVICE, 'Environment')):
-        key, separator, value = assignment.partition('=')
-        if separator and key in ('ORBIT_OUT_DIR', 'ORBIT_LOGO_DIR'):
-            values[key] = value
     for key, expected in [('ORBIT_OUT_DIR', '/var/lib/orbit'), ('ORBIT_LOGO_DIR', '/var/lib/orbit/logos')]:
         if key in values and values[key] != expected:
             raise ValueError(f'Unexpected {key}; inspect paths before release')
+
+
+def check_demo_key():
+    # Presence only. Values are never logged, copied to backups or sent here.
+    values = {}
+    try:
+        for item in shlex.split(property_value(SERVICE, 'Environment')):
+            key, sep, value = item.partition('=')
+            if sep:
+                values[key] = value
+        if ENV_FILE.is_symlink() or not ENV_FILE.is_file():
+            raise ValueError()
+        for line in ENV_FILE.read_text().splitlines():
+            key, sep, value = line.partition('=')
+            if sep and key.strip() in ('CG_API_KEY', 'CG_API_TIER'):
+                parts = shlex.split(value)
+                values[key.strip()] = parts[0] if len(parts) == 1 else ''
+        valid = bool(values.get('CG_API_KEY', '').strip()) and values.get('CG_API_TIER', 'none').lower() in ('none', 'demo')
+    except (OSError, ValueError):
+        valid = False
+    if not valid:
+        raise ValueError('Expected an existing Demo key in the service environment; configuration unchanged')
+
+
+def release_body(name, source, demo=False):
+    if name == 'collection.profile':
+        return DEMO_PROFILE if demo else read_installed(name)
+    return (front.REPO / source).read_bytes() if source else None
 
 
 @contextlib.contextmanager
@@ -136,7 +168,7 @@ def paused_timer(on_error=None):
             systemctl('start', TIMER)
 
 
-def create_backup(revision):
+def create_backup(revision, demo=False):
     backup = Path(tempfile.mkdtemp(prefix='collector-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + revision[:12] + '-', dir=front.BACKUPS))
     record = {'revision': revision, 'files': {}, 'units': {}, 'front_backup': None}
     (backup / 'units').mkdir(mode=0o700)
@@ -154,7 +186,7 @@ def create_backup(revision):
         old = read_installed(name)
         if old is not None:
             (backup / name).write_bytes(old)
-        record['files'][name] = {'old': front.body_hash(old), 'new': front.digest((front.REPO / source).read_bytes()) if source else None}
+        record['files'][name] = {'old': front.body_hash(old), 'new': front.body_hash(release_body(name, source, demo))}
     save_record(backup, record)
     return backup, record
 
@@ -165,8 +197,10 @@ def save_record(backup, record):
 
 def check_restore(backup, record):
     check_kraken_restore(backup, record)
-    if set(record['files']) not in (set(FILES), {'build_snapshot.py', 'validate_snapshot.py'}):
+    if set(record['files']) not in (set(FILES), set(FILES) - {'collection.profile'}, {'build_snapshot.py', 'validate_snapshot.py'}):
         raise ValueError('Unexpected collector rollback manifest')
+    if 'collection.profile' not in record['files'] and read_installed('collection.profile') is not None:
+        raise ValueError('Use the profile activation backup before rolling back an older release')
     for name, hashes in record['files'].items():
         if front.body_hash(read_installed(name)) not in (hashes['old'], hashes['new']):
             raise ValueError('Newer or modified collector exists; refusing rollback')
@@ -245,10 +279,11 @@ def retire_kraken(backup, record):
             raise ValueError('Retired collector still running; refusing removal')
         front.target(UNIT_DIR, name).unlink(missing_ok=True)
     systemctl('daemon-reload')
-    print('xStocks collector and timer retired. Crypto cadence preserved.', flush=True)
+    print('Legacy xStocks collector and timer absent. Crypto timer configuration preserved.', flush=True)
 
 
-def validate_collected(started):
+def validate_collected(started, require_new=False):
+    from validate_snapshot import market_max_age, demo_quotes_current
     result = subprocess.run(['/usr/bin/python3', str(front.REPO / 'scripts/validate_snapshot.py'), str(SNAPSHOT)], capture_output=True, timeout=30)
     if result.returncode:
         raise ValueError('Generated snapshot failed contract validation')
@@ -258,10 +293,19 @@ def validate_collected(started):
         raise CollectionNotReady('Collector did not produce a new snapshot')
     for name in ('coingecko_markets',):
         status = data.get('status', {}).get(name, {})
-        stamp = dt.datetime.fromisoformat((status.get('fetched_at') or '').replace('Z', '+00:00'))
+        try:
+            stamp = dt.datetime.fromisoformat((status.get('fetched_at') or '').replace('Z', '+00:00'))
+        except ValueError:
+            raise CollectionNotReady(f'{name} has no successful collection date') from None
+        if stamp.tzinfo is None:
+            raise CollectionNotReady(f'{name} has no timezone')
         age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
-        if status.get('ok') is not True or not -60 <= age <= 180:
+        if status.get('ok') is not True or not -60 <= age <= market_max_age(status) or (require_new and stamp.timestamp() < started):
             raise CollectionNotReady(f'{name} is unavailable or stale; rolling back')
+        if require_new and status.get('policy') != 'demo-250-v1':
+            raise CollectionNotReady('Demo profile was not applied')
+        if status.get('policy') == 'demo-250-v1' and not demo_quotes_current(data, time.time()):
+            raise CollectionNotReady('Insufficient current dated crypto prices; rolling back')
     from validate_snapshot import is_crypto
     if not data['coins'] or any(not is_crypto(c) for c in data['coins']):
         raise ValueError('Expected exclusively crypto assets')
@@ -302,17 +346,25 @@ def wait_for_provider(minimum, maximum=180):
         time.sleep(min(30, remaining))
 
 
-def collect_for_release():
+def collect_for_release(require_new=False):
     # One collection after a quiet minute; at most one retry, only after a
     # recorded 429 cooldown. No retry for schema, auth or service failures.
     for attempt in range(2):
-        # A failed crypto fetch is cached for up to 180s as well. Let that
-        # cache expire before the sole retry, even if Retry-After was shorter.
-        wait_for_provider(60 if attempt == 0 else 180)
+        # Let the active cache expire before the sole retry, even when
+        # Retry-After is shorter (300 seconds under the Demo profile).
+        minimum = 60 if attempt == 0 else 180
+        if read_installed('collection.profile') == DEMO_PROFILE:
+            previous = json.loads(SNAPSHOT.read_text()).get('status', {}).get('coingecko_markets', {})
+            if previous.get('policy') == 'demo-250-v1':
+                stamp = dt.datetime.fromisoformat((previous.get('attempted_at') or previous.get('fetched_at') or '').replace('Z', '+00:00'))
+                minimum = max(minimum, int(stamp.timestamp() + 301 - time.time()))
+            wait_for_provider(minimum, maximum=360)
+        else:
+            wait_for_provider(minimum)
         started = int(time.time())
         systemctl('start', SERVICE)
         try:
-            validate_collected(started)
+            validate_collected(started, require_new=True) if require_new else validate_collected(started)
             return
         except CollectionNotReady:
             if attempt == 0 and provider_retry_at() > time.time():
@@ -340,12 +392,15 @@ def run(args):
     if args.rollback:
         rollback(args.rollback)
         return
-    preflight(args.revision)
+    demo = getattr(args, 'demo_250', False)
+    preflight(args.revision, demo=demo)
     if not args.apply:
         print('Read-only preflight complete. --apply requires administrator activation.')
         return
     check_environment_paths()
-    backup, record = create_backup(args.revision)
+    if demo:
+        check_demo_key()
+    backup, record = create_backup(args.revision, demo=demo)
     command = f'sudo python3 {shlex.quote(str(Path(__file__).resolve()))} --rollback {backup.name}'
     print('Full rollback: ' + command, flush=True)
     def undo():
@@ -359,21 +414,27 @@ def run(args):
         for name, source in FILES.items():
             if front.body_hash(read_installed(name)) != record['files'][name]['old']:
                 raise ValueError('Collector changed during deployment')
-            if source is None:
+            body = release_body(name, source, demo)
+            if front.body_hash(body) != record['files'][name]['new']:
+                raise ValueError('Release payload changed during deployment')
+            if body is None:
                 installed(name).unlink(missing_ok=True)
             else:
-                front.atomic_write(installed(name), (front.REPO / source).read_bytes())
-        collect_for_release()
+                front.atomic_write(installed(name), body)
+        collect_for_release(require_new=True) if demo else collect_for_release()
         def remember_front(front_backup):
             record['front_backup'] = front_backup.name
             save_record(backup, record)
         front.run(argparse.Namespace(revision=args.revision, apply=True, rollback=None), on_backup=remember_front)
-    print(f'Release LIVE: {args.revision}. Configuration and generated-data paths preserved.')
+    print(f'Release LIVE: {args.revision}. Provider secrets and generated-data paths preserved.')
+    if demo:
+        print('Demo profile active: up to 250 crypto assets / 5 min; global / 1 h; local budget 10,000 requests / UTC month.')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--revision')
+    parser.add_argument('--demo-250', action='store_true', help='Activate the free Demo profile using the existing key; allow recovery preflight, require fresh postflight')
     action = parser.add_mutually_exclusive_group()
     action.add_argument('--apply', action='store_true')
     action.add_argument('--rollback')

@@ -103,6 +103,16 @@ class RateLimitTests(unittest.TestCase):
             self.assertIsNone(data['status']['coingecko_markets']['fetched_at'])
             self.assertIn('retry_at', data['status']['coingecko_markets'])
 
+    def test_access_refusal_honors_longer_retry_after_without_relabeling_success(self):
+        for code in (401, 403):
+            error = urllib.error.HTTPError('https://example.invalid', code, 'never public', {'Retry-After': '3600'}, None)
+            with patch.object(b.time, 'time', return_value=1767225600):
+                status = b.failed_status({'ok': True, 'fetched_at': '2025-12-31T23:59:00Z'}, error, 60, True)
+                self.assertEqual(status['retry_at'], '2026-01-01T01:00:00Z')
+                self.assertFalse(b.status_due({'status': {'coingecko_markets': status}}, 'coingecko_markets', 60))
+            self.assertEqual(status['fetched_at'], '2025-12-31T23:59:00Z')
+            self.assertEqual(status['http_status'], code)
+
     def test_invalid_and_symlinked_transport_state_fail_before_network(self):
         file = Path(b.rate_limit_path())
         invalid = ['[]', '{}', '{bad', 'x' * 4097, json.dumps({'retry_at': True, 'failures': 1}), json.dumps({'retry_at': 1, 'failures': 100}), json.dumps({'retry_at': -1, 'failures': 0})]
