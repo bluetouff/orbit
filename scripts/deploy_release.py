@@ -21,7 +21,7 @@ import deploy_front as front
 INSTALL = Path('/opt/orbit')
 SNAPSHOT = Path('/var/lib/orbit/orbit.json')
 ENV_FILE = Path('/etc/orbit/orbit.env')
-FILES = {'build_snapshot.py': 'build_snapshot.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': None, 'collection.profile': None}
+FILES = {'build_snapshot.py': 'build_snapshot.py', 'orbit_health.py': 'orbit_health.py', 'validate_snapshot.py': 'scripts/validate_snapshot.py', 'collect_xstocks.py': None, 'collection.profile': None}
 DEMO_PROFILE = b'demo-250-v1\n'
 UNIT_DIR = Path('/etc/systemd/system')
 KRAKEN_SERVICE = 'orbit-xstocks.service'
@@ -197,7 +197,7 @@ def save_record(backup, record):
 
 def check_restore(backup, record):
     check_kraken_restore(backup, record)
-    if set(record['files']) not in (set(FILES), set(FILES) - {'collection.profile'}, {'build_snapshot.py', 'validate_snapshot.py'}):
+    if set(record['files']) not in (set(FILES), set(FILES) - {'collection.profile'}, set(FILES) - {'orbit_health.py'}, set(FILES) - {'orbit_health.py', 'collection.profile'}, {'build_snapshot.py', 'validate_snapshot.py'}):
         raise ValueError('Unexpected collector rollback manifest')
     if 'collection.profile' not in record['files'] and read_installed('collection.profile') is not None:
         raise ValueError('Use the profile activation backup before rolling back an older release')

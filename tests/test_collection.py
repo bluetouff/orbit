@@ -14,7 +14,7 @@ class CollectionTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name)
         self.clock = [1767225600]
-        for name, value in [('OUT_DIR', str(self.path)), ('LOGO_DIR', str(self.path)), ('LOGO_FETCH_PER_RUN', 0), ('MARKETS_REFRESH_SEC', 60), ('_CG_LAST_REQUEST', None)]:
+        for name, value in [('TOP', 1), ('OUT_DIR', str(self.path)), ('LOGO_DIR', str(self.path)), ('LOGO_FETCH_PER_RUN', 0), ('MARKETS_REFRESH_SEC', 60), ('_CG_LAST_REQUEST', None)]:
             context = patch.object(b, name, value)
             context.start(); self.addCleanup(context.stop)
         for context in [patch.object(b.time, 'time', side_effect=lambda: self.clock[0]), patch.object(b.time, 'sleep'), patch.object(b, 'utc_now', side_effect=lambda: b.datetime.datetime.fromtimestamp(self.clock[0], b.datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')), patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=({'us10y': {'value': 1, 'date': '2026-01-01'}}, {'ok': True, 'fetched_at': '2026-01-01T00:00:00Z'}))]:

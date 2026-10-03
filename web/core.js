@@ -8,7 +8,17 @@
     '7d':'price_change_percentage_7d_in_currency', '30d':'price_change_percentage_30d_in_currency' };
   const ID = /^[a-z0-9][a-z0-9._-]{0,79}$/i;
   const MAX_FAV = 50, MIN_PEERS = 20;
-  const DEFAULTS = Object.freeze({tf:'24h',metric:'perf',filter:'all',signalsOpen:true});
+  const DEFAULTS = Object.freeze({tf:'24h',metric:'perf',filter:'all',signalsOpen:true,layout:'map',sort:'rank',reference:'all'});
+  // Partial, ID-based exclusions. Sources and review date are visible in the UI.
+  // Do not infer a category from a symbol, price or absence from these lists.
+  const REFERENCE_REVIEW = '2026-10-03';
+  const REFERENCE_SOURCES = Object.freeze({
+    stablecoin:'https://www.coingecko.com/en/categories/stablecoins',
+    tokenized:'https://www.coingecko.com/en/categories/tokenized-products'
+  });
+  const STABLECOINS = new Set(['tether','usd-coin','usds','ethena-usde','dai','usd1-wlfi','global-dollar','paypal-usd','ripple-usd','falcon-finance','united-stables','usdd','bfusd','usdgo','gho','open-usd','usual-usd','ylds','true-usd','usdtb','euro-coin','first-digital-usd','apxusd','re-protocol-reusd','crvusd','agora-dollar','frax','usx','societe-generale-forge-eurcv']);
+  const TOKENIZED = new Set(['figure-heloc','tether-gold','hashnote-usyc','ondo-us-dollar-yield','blackrock-usd-institutional-digital-liquidity-fund','pax-gold','spiko-amundi-overnight-swap-fund-eur','blockchain-capital','superstate-short-duration-us-government-securities-fund-ustb','eutbl']);
+  const referenceGroup = id => STABLECOINS.has(id)?'stablecoin':TOKENIZED.has(id)?'tokenized':null;
   const text = (v, max = 96) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0,max);
   function num(v, lo = -Infinity, hi = Infinity) {
     if (!['number','string'].includes(typeof v) || (typeof v === 'string' && !v.trim())) return null;
@@ -113,17 +123,19 @@
     }
     return result;
   }
-  function analyze(snapshot,tf='24h',now=Date.now()) {
+  function analyze(snapshot,tf='24h',now=Date.now(),reference='all') {
+    reference=reference==='screened'?'screened':'all';
     if(!Object.hasOwn(TF,tf)) tf='24h';
     const coins=snapshot?.coins || [],key=TF[tf]||TF['24h'];
     const current=sourceState(snapshot,'coingecko_markets',now).usable;
     const demo=snapshot?.status?.coingecko_markets?.policy==='demo-250-v1',maximum=demo?600000:180000;
     const observed=c=>(demo?['current']:['current','unknown']).includes(observation(c,now,maximum));
     const crypto=coins.filter(c=>!isXstock(c));
-    const peers=crypto.filter(c=>observed(c)&&Number.isFinite(c[key]));
+    const eligible=crypto.filter(c=>reference==='all'||!referenceGroup(c.id));
+    const peers=eligible.filter(c=>observed(c)&&Number.isFinite(c[key]));
     const price=stats(peers.map(c=>c[key]));
     const sorted=peers.map(c=>c[key]).sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);
-    const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:crypto.length,
+    const market={available:current&&peers.length>=MIN_PEERS,n:peers.length,total:eligible.length,excluded:crypto.length-eligible.length,
       dated:peers.filter(c=>observation(c,now,maximum)==='current').length,median:null,up:null,down:null,flat:null};
     if(market.available) {
       market.median=sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2;
@@ -139,6 +151,7 @@
         observation:observation(c,now,maximum),relativeBTC:isXstock(c)?{value:null,reason:'xStocks are outside the crypto reference',dated:false}:relativeBitcoin(c,btc,key,current,now,maximum,demo),medianGap:null};
       byId.set(c.id,result);
       if(isXstock(c)) {result.reason='xStocks are outside the crypto reference';continue;}
+      if(reference==='screened'&&referenceGroup(c.id)) {result.reason='Excluded from this statistical reference';continue;}
       if(!current) {result.reason='Market data is not current';continue;}
       if(!observed(c)) {result.reason=result.observation==='invalid'?'Asset observation time is invalid':'Asset price is stale';continue;}
       if(!Number.isFinite(c[key])) {result.reason='Return unavailable for this period';continue;}
@@ -160,7 +173,7 @@
       }
       result.score=Math.max(0,...result.events.map(e=>e.score));
     }
-    return {byId,price,activity,market,tf,referenceCount:crypto.length,current,minPeers:MIN_PEERS};
+    return {byId,price,activity,market,tf,reference,referenceCount:eligible.length,current,minPeers:MIN_PEERS};
   }
   function settings(value) {
     const s={...DEFAULTS};
@@ -169,7 +182,20 @@
     if(['perf','market_cap','total_volume'].includes(value.metric)) s.metric=value.metric;
     if(['all','divergence','anomaly','gainers','losers'].includes(value.filter)) s.filter=value.filter;
     if(typeof value.signalsOpen==='boolean') s.signalsOpen=value.signalsOpen;
+    if(['map','list'].includes(value.layout)) s.layout=value.layout;
+    if(['rank','name','performance','market_cap','total_volume','signals'].includes(value.sort)) s.sort=value.sort;
+    if(['all','screened'].includes(value.reference)) s.reference=value.reference;
+    if(s.tf!=='24h'&&s.filter==='divergence') s.filter='all';
     return s;
+  }
+  function sortedCoins(coins,sort,analysis,tf,usable,language='en') {
+    const value=c=>!usable(c)?null:sort==='performance'?c[TF[tf]]:sort==='signals'?(analysis?.byId.get(c.id)?.available?analysis.byId.get(c.id).score:null):c[sort];
+    return [...coins].sort((a,b)=>{
+      if(sort==='name')return a.name.localeCompare(b.name,language)||a.id.localeCompare(b.id);
+      if(sort==='rank')return (a.market_cap_rank??Infinity)-(b.market_cap_rank??Infinity)||a.id.localeCompare(b.id);
+      const av=value(a),bv=value(b),af=Number.isFinite(av),bf=Number.isFinite(bv);
+      return af!==bf?(af?-1:1):af&&av!==bv?bv-av:a.id.localeCompare(b.id);
+    });
   }
   function importWatchlist(raw) {
     if(typeof raw!=='string'||raw.length>16384) throw new Error('File exceeds 16 KB');
@@ -210,5 +236,5 @@
     const logo=hasLogo?Math.max(0,Math.min(iw*.53,ih-font-gap,ih*.58)):0;
     return {pad,font:hasLogo?font:Math.min(iw/6.5,ih*.45),logo,gap};
   }
-  return {TF,ID,MAX_FAV,MIN_PEERS,DEFAULTS,text,num,time,isXstock,assetSource,quoteState,normalizeSnapshot,sourceState,stats,analyze,settings,importWatchlist,mergeWatchlist,squarify,tileContent};
+  return {TF,ID,MAX_FAV,MIN_PEERS,DEFAULTS,REFERENCE_REVIEW,REFERENCE_SOURCES,referenceGroup,sortedCoins,text,num,time,isXstock,assetSource,quoteState,normalizeSnapshot,sourceState,stats,analyze,settings,importWatchlist,mergeWatchlist,squarify,tileContent};
 });

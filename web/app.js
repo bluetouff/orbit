@@ -39,7 +39,7 @@ function toggleCoin(id){
 }
 function changeSetting(key,value){state.settings=C.settings({...state.settings,[key]:value});save();render();}
 function render(){
-  state.analysis=C.analyze(state.snapshot,state.settings.tf);
+  state.analysis=C.analyze(state.snapshot,state.settings.tf,Date.now(),state.settings.reference);
   $('shell').classList.toggle('onboarding',state.onboarding);
   $('shell').classList.toggle('home',state.onboarding&&!state.picking);
   $('welcome').hidden=!state.onboarding||!state.picking;
@@ -54,6 +54,15 @@ function render(){
   document.querySelectorAll('[data-tf]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tf===state.settings.tf)));
   document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===state.view)));
   $('filterSelect').value=state.settings.filter;$('sizeSelect').value=state.settings.metric;
+  $('filterSelect').querySelector('[value="divergence"]').disabled=state.settings.tf!=='24h';
+  $('filterNotice').hidden=state.onboarding||state.settings.tf==='24h';
+  $('filterNotice').textContent=t('Divergences are available in 24H.');
+  const listMode=!state.onboarding&&state.settings.layout==='list';
+  document.querySelector('.map-section').classList.toggle('list-mode',listMode);
+  $('stage').hidden=listMode;$('assetList').hidden=!listMode;$('listTools').hidden=!listMode;
+  $('sizeSelect').closest('label').hidden=listMode;
+  document.querySelectorAll('[data-layout]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.layout===state.settings.layout)));
+  $('sortSelect').value=state.settings.sort;$('referenceSelect').value=state.settings.reference;
   $('signalsToggle').setAttribute('aria-expanded',String(state.settings.signalsOpen));
   $('signalsToggleLabel').textContent=t('Signals');
   $('closeSignals').title=t('Hide signals');
@@ -63,7 +72,7 @@ function render(){
   const missing=state.view==='fav'?state.selected.size-sourceCoins().length:0;
   $('mapSummary').textContent=t(list.length===1?'{n} asset':'{n} assets',{n:list.length})+(missing?t(' · {n} unavailable',{n:missing}):'')+(returns.length?t(' · mean {value}',{value:pct(returns.reduce((a,b)=>a+b,0)/returns.length)}):'');
   $('periodCaption').textContent=t('{period} crypto performance · USD',{period:t(periods[state.settings.tf])});
-  renderSources();renderMarketContext();renderSignals();drawMap();renderSelection();
+  renderSources();renderMarketContext();renderSignals();renderAssetList();drawMap();renderSelection();
 }
 function renderSelection(){
   $('welcomeCount').textContent=t('{n} of 50 selected',{n:state.selected.size});$('manageCount').textContent=t('{n} / 50 selected',{n:state.selected.size});
@@ -101,12 +110,24 @@ function renderSources(){
 }
 function renderMarketContext(){
   const box=$('marketContext'),m=state.analysis.market;box.replaceChildren();
+  const screened=state.settings.reference==='screened';
+  $('referenceNote').textContent=t('Partial exclusions reviewed {date}. Unlisted assets are not classified.',{date:C.REFERENCE_REVIEW});
+  const sources=$('referenceSources');sources.replaceChildren();
+  for(const [group,url] of Object.entries(C.REFERENCE_SOURCES)){
+    const link=el('a','',group==='stablecoin'?'CoinGecko stablecoins':'CoinGecko tokenized assets');link.href=url;link.target='_blank';link.rel='noopener noreferrer';sources.append(link);
+  }
+  const excluded=$('referenceExcluded');excluded.replaceChildren();
+  for(const c of coins().filter(c=>C.referenceGroup(c.id)))excluded.append(el('li','',c.name,false));
+  const alternative=C.analyze(state.snapshot,state.settings.tf,Date.now(),screened?'all':'screened');
+  const full=screened?alternative:state.analysis,filtered=screened?state.analysis:alternative;
+  const count=a=>sourceCoins().reduce((n,c)=>n+(a.byId.get(c.id)?.events.length||0),0);
+  $('referenceComparison').textContent=full.current&&filtered.current?t('Signals in this selection: all {all}; screened {screened}.',{all:count(full),screened:count(filtered)}):t('Current market data is required.');
   const heading=el('div','context-heading');heading.append(el('h3','','Crypto context'),el('span','',state.settings.tf.toUpperCase()));box.append(heading);
   if(!m.available){box.append(el('p','context-note',state.analysis.current?'Insufficient reference coverage':'Market data is not current'));return;}
   const metrics=el('div','context-metrics');metrics.append(metric('Market median',pct(m.median)),metric('Assets rising',decimal(100*m.up/m.n,1)+'%'));box.append(metrics);
   const bar=el('div','breadth-bar');bar.setAttribute('role','img');bar.setAttribute('aria-label',t('{up} rising, {flat} unchanged, {down} falling',{up:m.up,flat:m.flat,down:m.down}));
   for(const [kind,count] of [['rising',m.up],['flat',m.flat],['falling',m.down]]){const part=el('span',kind);part.style.width=(100*count/m.n)+'%';bar.append(part);}
-  box.append(bar,el('p','context-note',t('{n} / {total} assets · stablecoins included',{n:m.n,total:m.total})));
+  box.append(bar,el('p','context-note',t(screened?'{n} / {total} reference assets · exclusions: {excluded}':'{n} / {total} assets · stablecoins included',{n:m.n,total:m.total,excluded:m.excluded})));
   const quality=el('p','context-quality'+(m.dated<m.n?' limited':''),t('{dated} / {n} observation times supplied',{dated:m.dated,n:m.n}));
   quality.title=t('Collection time does not establish when a provider observed a price.');box.append(quality);
 }
@@ -146,6 +167,25 @@ function filteredCoins(){return mapCoins().filter(c=>{
   const p=currentReturn(c),r=eventsFor(c);
   return state.settings.filter==='all'||state.settings.filter==='gainers'&&p!=null&&p>0||state.settings.filter==='losers'&&p!=null&&p<0||state.settings.filter==='divergence'&&r?.divergence!=null||state.settings.filter==='anomaly'&&r?.events.some(e=>e.kind!=='divergence');
 });}
+function renderAssetList(){
+  if($('assetList').hidden)return;
+  const rows=$('assetRows'),focused=rows.contains(document.activeElement)?document.activeElement.dataset.listAsset:null,scroll=$('assetList').scrollTop;
+  const query=C.text($('assetSearch').value,80).toLocaleLowerCase(locale());
+  const list=C.sortedCoins(filteredCoins().filter(c=>(c.name+' '+c.symbol).toLocaleLowerCase(locale()).includes(query)),state.settings.sort,state.analysis,state.settings.tf,c=>C.quoteState(state.snapshot,c).usable,locale());
+  rows.replaceChildren();$('listEmpty').hidden=list.length>0;$('returnColumn').textContent=t(state.settings.tf.toUpperCase());
+  for(const c of list){
+    const row=el('tr'),identity=el('td','list-identity'),open=button('','asset-row-button',()=>openAsset(c.id));open.dataset.listAsset=c.id;
+    const name=el('span','list-name');name.append(el('b','',c.symbol.toUpperCase(),false),el('span','',c.name,false));open.append(coinImage(c),name);identity.append(open);
+    const live=C.quoteState(state.snapshot,c).usable,p=currentReturn(c),events=eventsFor(c),details=el('span','list-mobile-meta');
+    details.textContent=t('Price {price} · Cap {cap} · Vol {volume}',{price:price(live?c.current_price:null),cap:big(live?c.market_cap:null),volume:big(live?c.total_volume:null)});identity.append(details);
+    row.append(identity,el('td','list-price',price(live?c.current_price:null)),el('td',p==null?'muted':p>=0?'up':'down',pct(p)),el('td','list-cap',big(live?c.market_cap:null)),el('td','list-volume',big(live?c.total_volume:null)));
+    const signal=el('td','list-signal'),number=events?.available?events.events.length:null;
+    const badge=el('span',number?'signal-badge':'muted',number===null?(events?.reason==='Excluded from this statistical reference'?'Excluded':'Unavailable'):number?t(number===1?'{n} signal':'{n} signals',{n:number}):'None');
+    badge.title=events?.available?events.events.map(e=>t(e.label)).join(' · '):t(events?.reason||'Signals unavailable');signal.append(badge);row.append(signal);rows.append(row);
+  }
+  if(focused)rows.querySelector(`[data-list-asset="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
+  $('assetList').scrollTop=scroll;
+}
 function drawMap(){cancelAnimationFrame(canvasFrame);canvasFrame=requestAnimationFrame(paintMap);}
 function paintMap(){
   const stage=$('stage'),w=stage.clientWidth,h=stage.clientHeight,dpr=Math.min(devicePixelRatio||1,2);
@@ -154,7 +194,7 @@ function paintMap(){
   const list=filteredCoins(),max=Math.max(1,...list.map(c=>Math.abs(currentReturn(c)||0)));
   // Keep selection order stable. Only areas change with the chosen metric.
   rects=C.squarify(list.map(c=>({id:c.id,coin:c,value:!C.quoteState(state.snapshot,c).usable?1:state.settings.metric==='perf'?.12+.88*Math.abs(currentReturn(c)||0)/max:Math.max(1,c[state.settings.metric]||1)})),{x:0,y:0,w,h});
-  const hits=$('tileButtons'),focused=document.activeElement?.dataset?.tile;
+  const hits=$('tileButtons'),active=document.activeElement?.dataset?.tile,focused=rects.some(r=>r.id===active)?active:null;
   hits.replaceChildren();$('mapMessage').hidden=!!list.length;
   if(!list.length){
     let title='A little more focus.',body='Your chosen assets will appear here.';
@@ -165,13 +205,13 @@ function paintMap(){
   }
   for(const r of rects){
     paintTile(r);
-    const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;
+    const b=button('', 'tile-hit',()=>openAsset(r.id));b.dataset.tile=r.id;b.tabIndex=(focused?r.id===focused:r===rects[0])?0:-1;
     const p=currentReturn(r.coin),events=eventsFor(r.coin)?.events||[];
     b.setAttribute('aria-label',r.coin.name+', '+pct(p)+', '+t(state.settings.tf.toUpperCase())+(events.length?', '+events.map(e=>t(e.label)).join(', '):''));
     b.dataset.current=String(C.quoteState(state.snapshot,r.coin).usable);
     b.style.left=r.x+'px';b.style.top=r.y+'px';b.style.width=r.w+'px';b.style.height=r.h+'px';
     b.addEventListener('pointerenter',()=>showTooltip(r));b.addEventListener('pointerleave',hideTooltip);b.addEventListener('focus',()=>showTooltip(r));b.addEventListener('blur',hideTooltip);
-    b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b);buttons[(index+delta+buttons.length)%buttons.length]?.focus();}});
+    b.addEventListener('keydown',e=>{const delta={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];if(delta){e.preventDefault();const buttons=[...hits.children],index=buttons.indexOf(b),next=buttons[(index+delta+buttons.length)%buttons.length];b.tabIndex=-1;next.tabIndex=0;next.focus();}});
     hits.append(b);
   }
   if(focused)hits.querySelector(`[data-tile="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
@@ -191,13 +231,15 @@ function paintTile(r){
   ctx.fillStyle=p==null?'#24282c':p>=0?`hsl(154 40% ${23+strength*13}%)`:`hsl(354 39% ${25+strength*13}%)`;ctx.fillRect(x,y,w,h);
   if(result?.events.length){ctx.strokeStyle=result.divergence!=null?'#85d8ed':'#f7d877';ctx.lineWidth=4;ctx.strokeRect(x+1,y+1,w-2,h-2);}
   const img=logo(c),badge=result?.events.length&&Math.min(w,h)>76?22:0;
-  const content=C.tileContent(w,h-badge,!!img),text=p==null?t('Unavailable'):pct(p);
+  const symbolHeight=w>=48&&h-badge>=54?16:0;
+  const content=C.tileContent(w,h-badge-symbolHeight,!!img),text=p==null?t('Unavailable'):pct(p);
   let fs=content.font;
   ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
   const measured=ctx.measureText(text).width;if(measured>w-content.pad*2)fs*=Math.max(0,w-content.pad*2)/measured;
-  const block=content.logo+(img?content.gap:0)+fs,top=y+badge+(h-badge-block)/2;
+  const block=content.logo+(img?content.gap:0)+fs+symbolHeight,top=y+badge+(h-badge-block)/2;
   if(img&&content.logo>8){ctx.save();ctx.beginPath();ctx.arc(x+w/2,top+content.logo/2,content.logo/2,0,Math.PI*2);ctx.clip();ctx.drawImage(img,x+(w-content.logo)/2,top,content.logo,content.logo);ctx.restore();}
   if(fs>=6){ctx.font=`650 ${fs}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(text,x+w/2,top+content.logo+(img?content.gap:0));}
+  if(symbolHeight){ctx.font='650 11px system-ui';ctx.fillStyle='#e5f2ec';ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(c.symbol.toUpperCase(),x+w/2,top+block-symbolHeight+3,w-12);}
   if(badge){ctx.font='600 10px system-ui';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillStyle=result.divergence!=null?'#b9edfa':'#fff0b3';ctx.fillText(t(result.divergence!=null?'DIVERGENCE':'ANOMALY'),x+10,y+8,w-20);}
   ctx.restore();
 }
@@ -348,7 +390,7 @@ function updateImportPreview(){
   try{const ids=C.mergeWatchlist([...state.selected],pendingImport.coins,document.querySelector('[name="importMode"]:checked').value==='replace');const unknown=ids.filter(id=>!byId(id)).length;$('importWarning').textContent=t('{n} assets after import',{n:ids.length})+(unknown?t(' · {n} currently unavailable; identifiers will be kept.',{n:unknown}):'.');$('confirmImport').disabled=false;}catch(e){$('importWarning').textContent=t(e.message);$('confirmImport').disabled=true;}
 }
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
-document.querySelectorAll('dialog').forEach(d=>{d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close();}});d.addEventListener('close',()=>{if(d.id==='assetDialog')state.activeCoin=null;const opener=d._opener;if(opener?.isConnected)opener.focus();else if(opener?.id)$(opener.id)?.focus();else if(opener?.dataset.tile)$('tileButtons').querySelector(`[data-tile="${CSS.escape(opener.dataset.tile)}"]`)?.focus();else if(opener?.dataset.signal)$('signalList').querySelector(`[data-signal="${CSS.escape(opener.dataset.signal)}"]`)?.focus();});});
+document.querySelectorAll('dialog').forEach(d=>{d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close();}});d.addEventListener('close',()=>{if(d.id==='assetDialog')state.activeCoin=null;const opener=d._opener;if(opener?.isConnected)opener.focus();else if(opener?.id)$(opener.id)?.focus();else if(opener?.dataset.tile)$('tileButtons').querySelector(`[data-tile="${CSS.escape(opener.dataset.tile)}"]`)?.focus();else if(opener?.dataset.listAsset)$('assetRows').querySelector(`[data-list-asset="${CSS.escape(opener.dataset.listAsset)}"]`)?.focus();else if(opener?.dataset.signal)$('signalList').querySelector(`[data-signal="${CSS.escape(opener.dataset.signal)}"]`)?.focus();});});
 $('manageBtn').addEventListener('click',()=>{manageLimit=80;renderChoosers();openDialog('manageDialog');$('manageSearch').focus();});
 $('homeLink').addEventListener('click',e=>{e.preventDefault();state.onboarding=true;state.picking=false;state.view='fav';render();});
 $('buildWatchlist').addEventListener('click',()=>{if(state.selected.size){state.onboarding=false;render();$('manageBtn').focus();}else{state.picking=true;render();$('welcomeSearch').focus();}});
@@ -359,6 +401,10 @@ $('finishWelcome').addEventListener('click',()=>{state.onboarding=false;state.se
 $('welcomeSearch').addEventListener('input',renderChoosers);$('manageSearch').addEventListener('input',()=>{manageLimit=80;renderChoosers();});$('selectedOnly').addEventListener('change',renderChoosers);
 $('moreCoins').addEventListener('click',()=>{manageLimit+=80;renderChoosers();});
 document.querySelectorAll('[data-tf]').forEach(b=>b.addEventListener('click',()=>changeSetting('tf',b.dataset.tf)));
+document.querySelectorAll('[data-layout]').forEach(b=>b.addEventListener('click',()=>changeSetting('layout',b.dataset.layout)));
+$('sortSelect').addEventListener('change',e=>changeSetting('sort',e.target.value));
+$('referenceSelect').addEventListener('change',e=>changeSetting('reference',e.target.value));
+$('assetSearch').addEventListener('input',renderAssetList);
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>{state.view=b.dataset.view;state.onboarding=state.view==='fav'&&!state.selected.size;render();}));
 $('filterSelect').addEventListener('change',e=>changeSetting('filter',e.target.value));$('sizeSelect').addEventListener('change',e=>changeSetting('metric',e.target.value));
 $('resetFilter').addEventListener('click',()=>changeSetting('filter','all'));

@@ -5,6 +5,28 @@ const C = require('../web/core.js');
 // Synthetic boundary fixtures only. Never served as application data.
 const stamp = '2026-01-01T00:00:00Z', now = Date.parse(stamp);
 
+test('incompatible divergence filters normalize on changes and imported settings',()=>{
+  for(const tf of ['1h','7d','30d'])assert.equal(C.settings({tf,filter:'divergence'}).filter,'all');
+  assert.equal(C.settings({tf:'24h',filter:'divergence'}).filter,'divergence');
+  assert.equal(C.importWatchlist(JSON.stringify({version:1,coins:[],settings:{tf:'7d',filter:'divergence'}})).settings.filter,'all');
+});
+test('screened reference has explicit ID exclusions, unknowns and unchanged BTC arithmetic',()=>{
+  const r=raw(40);r.coins[0].id='bitcoin';r.coins[1].id='tether';r.coins[2].symbol='usdt';
+  const s=C.normalizeSnapshot(r),before=structuredClone(s),all=C.analyze(s,'24h',now),screened=C.analyze(s,'24h',now,'screened');
+  assert.equal(screened.price.n,39);assert.equal(screened.market.excluded,1);
+  assert.equal(screened.byId.get('tether').available,false);assert.deepEqual(screened.byId.get('tether').events,[]);
+  assert.equal(screened.byId.get('asset-2').available,true);assert.equal(C.referenceGroup('asset-2'),null);
+  assert.deepEqual(screened.byId.get('asset-2').relativeBTC,all.byId.get('asset-2').relativeBTC);
+  assert.deepEqual(s,before);
+  const small={...s,coins:s.coins.slice(0,20)};assert.equal(C.analyze(small,'24h',now,'screened').market.available,false);
+});
+test('list sorting is stable, puts unavailable values last and never mutates input',()=>{
+  const s=C.normalizeSnapshot(raw()),a=C.analyze(s,'24h',now),before=[...s.coins];
+  const result=C.sortedCoins(s.coins,'performance',a,'24h',c=>c.id!=='asset-0');
+  assert.equal(result.at(-1).id,'asset-0');assert.equal(result[0][C.TF['24h']],3);assert.deepEqual(s.coins,before);
+  assert.deepEqual(C.sortedCoins([...s.coins].reverse(),'signals',a,'24h',()=>true).map(c=>c.id),C.sortedCoins(s.coins,'signals',a,'24h',()=>true).map(c=>c.id));
+});
+
 test('Demo profile enforces collection, observation and missing-date boundaries independently',()=>{
   const data=raw();
   data.status={coingecko_markets:{ok:true,fetched_at:stamp,policy:'demo-250-v1'},coingecko_global:{ok:true,fetched_at:stamp,policy:'demo-250-v1'}};
@@ -131,7 +153,7 @@ test('logos and returns scale with tile size without a desktop size cap',()=>{
 test('market median and breadth count every usable return, including unchanged assets',()=>{
   const r=raw(20);r.coins.forEach((c,i)=>{c[C.TF['24h']]=i-9;c.last_updated=stamp;});
   const a=C.analyze(C.normalizeSnapshot(r),'24h',now);
-  assert.deepEqual(a.market,{available:true,n:20,total:20,dated:20,median:0.5,up:10,down:9,flat:1});
+  assert.deepEqual(a.market,{available:true,n:20,total:20,excluded:0,dated:20,median:0.5,up:10,down:9,flat:1});
   assert.equal(a.byId.get('asset-0').medianGap,-9.5);
   r.coins.push({...r.coins[0],id:'twenty-first',[C.TF['24h']]:11});
   assert.equal(C.analyze(C.normalizeSnapshot(r),'24h',now).market.median,1);

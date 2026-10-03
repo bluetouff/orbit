@@ -22,7 +22,7 @@ class RateLimitTests(unittest.TestCase):
         context = patch.object(b, 'OUT_DIR', str(self.directory))
         context.start()
         self.addCleanup(context.stop)
-        for name, value in [('_CG_LAST_REQUEST', None)]:
+        for name, value in [('TOP', 1), ('_CG_LAST_REQUEST', None)]:
             context = patch.object(b, name, value)
             context.start()
             self.addCleanup(context.stop)

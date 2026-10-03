@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 import tempfile
 import fcntl
 import stat
+import orbit_health
 
 
 def collection_profile(path):
@@ -314,7 +315,14 @@ def fetch(url, headers=None, binary=False):
         data = r.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             raise ValueError("response too large")
-        return data if binary else json.loads(data.decode("utf-8"))
+        def invalid_constant(_):
+            raise ValueError('Non-finite JSON number')
+        def finite_float(value):
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError('Non-finite JSON number')
+            return number
+        return data if binary else json.loads(data.decode("utf-8"), parse_constant=invalid_constant, parse_float=finite_float)
 
 
 def cg(path, params):
@@ -467,17 +475,23 @@ def get_social():
     try:
         d = fetch(f"https://lunarcrush.com/api4/public/coins/list/v1",
                   headers={"Authorization": f"Bearer {LUNAR_KEY}"})
+        if not isinstance(d, dict) or not isinstance(d.get('data'), list):
+            raise ValueError('Invalid social response')
+        rows = d['data']
+        if any(not isinstance(row, dict) or not isinstance(row.get('symbol'), str)
+               or not SYMBOL_RE.fullmatch(row['symbol']) for row in rows):
+            raise ValueError('Invalid social row')
+        out = {}
+        counts = Counter(row['symbol'].upper() for row in rows)
+        for row in rows:
+            symbol = row['symbol'].upper()
+            if counts[symbol] == 1:
+                values = normalize_social(row)
+                if values:
+                    out[symbol] = values
     except Exception as e:
         sys.stderr.write(f"social skip: {type(e).__name__}\n")
         return {}, {"enabled": True, "ok": False, "error": type(e).__name__, "count": 0, "fetched_at": utc_now()}
-    out = {}
-    rows = d.get("data", [])
-    counts = Counter((it.get("symbol") or "").upper() for it in rows)
-    for it in rows:
-        sym = (it.get("symbol") or "").upper()
-        if sym and counts[sym] == 1:
-            out[sym] = {"galaxy_score": it.get("galaxy_score"), "sentiment": it.get("sentiment"),
-                        "social_dominance": it.get("social_dominance")}
     return out, {"enabled": True, "ok": True, "count": len(out), "match": "symbol", "fetched_at": utc_now()}
 
 
@@ -490,8 +504,23 @@ def get_macro():
         try:
             d = fetch("https://api.stlouisfed.org/fred/series/observations?" + urllib.parse.urlencode(
                 {"series_id": sid, "api_key": FRED_KEY, "file_type": "json", "sort_order": "desc", "limit": 12}))
-            vals = [(o["date"], float(o["value"])) for o in d.get("observations", [])
-                    if o.get("value") not in (None, ".", "")]
+            if not isinstance(d, dict) or not isinstance(d.get('observations'), list):
+                raise ValueError('Invalid macro response')
+            vals = []
+            for row in d['observations']:
+                if not isinstance(row, dict):
+                    raise ValueError('Invalid macro observation')
+                if row.get('value') in (None, '.', ''):
+                    continue
+                value = finite_num(row.get('value'), lo=-100000, hi=100000)
+                date = row.get('date')
+                if value is None or not isinstance(date, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+                    raise ValueError('Invalid macro value')
+                if datetime.date.fromisoformat(date) > datetime.datetime.now(datetime.timezone.utc).date():
+                    raise ValueError('Future macro observation')
+                vals.append((date, value))
+            if any(vals[i][0] <= vals[i+1][0] for i in range(len(vals)-1)):
+                raise ValueError('Unordered macro observations')
             if vals:
                 cur, prev = vals[0], (vals[1] if len(vals) > 1 else None)
                 out[key] = {"value": round(cur[1], 3), "date": cur[0],
@@ -502,7 +531,7 @@ def get_macro():
     if out:
         out["asof"] = out.get("us10y", {}).get("date") or out.get("usd", {}).get("date")
     series_count = len([k for k in FRED_SERIES if k in out])
-    return out or None, {"enabled": True, "ok": bool(out), "series": series_count, "errors": errors, "fetched_at": utc_now()}
+    return out or None, {"enabled": True, "ok": series_count == len(FRED_SERIES), "series": series_count, "errors": errors, "fetched_at": utc_now()}
 
 
 def cache_logo(coin):
@@ -537,9 +566,10 @@ def publish_snapshot(snapshot):
     if PROFILE:
         for key in ('coingecko_markets', 'coingecko_global'):
             snapshot['status'][key]['policy'] = PROFILE
+    body = json.dumps(snapshot, separators=(",", ":"), allow_nan=False)
     tmp = os.path.join(OUT_DIR, "orbit.json.tmp")
     with open(tmp, "w") as f:
-        json.dump(snapshot, f, separators=(",", ":"))
+        f.write(body)
     os.replace(tmp, os.path.join(OUT_DIR, "orbit.json"))
     os.chmod(os.path.join(OUT_DIR, "orbit.json"), 0o644)
 
@@ -547,7 +577,7 @@ def publish_snapshot(snapshot):
 def publish_crypto_first(markets, status, previous):
     """Make complete crypto pages available before optional network work."""
     social = previous_social(previous)
-    symbols = Counter((c.get('symbol') or '').upper() for c in markets if isinstance(c, dict))
+    symbols = Counter(c['symbol'].upper() for c in markets if isinstance(c, dict) and isinstance(c.get('symbol'), str))
     social = {symbol: value for symbol, value in social.items() if symbols[symbol] == 1}
     coins, seen = [], set()
     for i, row in enumerate(markets):
@@ -569,6 +599,29 @@ def publish_crypto_first(markets, status, previous):
                       'macro': previous.get('macro'), 'social_enabled': bool(LUNAR_KEY)})
 
 
+class MarketCoverageError(ValueError):
+    """A response cannot replace a substantially larger healthy universe."""
+
+
+def check_market_coverage(markets, previous):
+    valid = {}
+    for row in markets:
+        coin = normalize_coin(row, {}, False)
+        if coin:
+            valid[coin['id']] = coin
+    old_count = len({c['id'] for c in previous if isinstance(c, dict) and isinstance(c.get('id'), str)})
+    minimum = max(min(20, TOP), math.ceil(min(old_count, TOP)*.9))
+    if len(valid) < minimum:
+        raise MarketCoverageError('Insufficient crypto universe')
+    if PROFILE == 'demo-250-v1':
+        now = time.time()
+        def recent(coin):
+            stamp = orbit_health.timestamp(coin.get('last_updated'))
+            return stamp is not None and -60 <= now-stamp <= 600
+        if len(valid) < 20 or sum(recent(c) for c in valid.values()) < math.ceil(len(valid)*.9) or not recent(valid.get('bitcoin', {})):
+            raise MarketCoverageError('Insufficient current crypto quotes')
+
+
 def build():
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(LOGO_DIR, exist_ok=True)
@@ -583,11 +636,11 @@ def build():
     else:
         try:
             markets = get_markets()
-            if not markets or not any(normalize_coin(c, {}, False) for c in markets):
-                raise ValueError('No valid crypto markets')
+            check_market_coverage(markets, old_crypto)
             markets_status = {'ok': True, 'fetched_at': utc_now(), 'ttl': MARKETS_REFRESH_SEC}
             markets_status['last_success_at'] = markets_status['fetched_at']
         except Exception as error:
+            markets = []
             retained_crypto = old_crypto
             markets_status = failed_status(prev_status.get('coingecko_markets') or {}, error, MARKETS_REFRESH_SEC, retained_crypto)
 
@@ -623,14 +676,22 @@ def build():
             macro_status["reused"] = True
             old = prev_status.get("fred") or {}
             macro_status["last_success_at"] = old.get("last_success_at") or (old.get("fetched_at") if old.get("ok") else None)
-        elif macro:
+        elif macro and macro_status.get('ok'):
             macro_status["last_success_at"] = macro_status.get("fetched_at")
+        elif macro:
+            # Preserve each missing series and its original observation date.
+            for key in FRED_SERIES:
+                if key not in macro and key in (previous.get('macro') or {}):
+                    macro[key] = previous['macro'][key]
+            old = prev_status.get('fred') or {}
+            macro_status['last_success_at'] = old.get('last_success_at') or (old.get('fetched_at') if old.get('ok') else None)
+            macro_status['reused'] = True
     else:
         macro = previous.get("macro")
         macro_status = mark_reused(prev_status.get("fred"), MACRO_REFRESH_SEC)
 
     coins = []
-    symbols = Counter((c.get("symbol") or "").upper() for c in (markets or retained_crypto))
+    symbols = Counter(c['symbol'].upper() for c in (markets or retained_crypto) if isinstance(c, dict) and isinstance(c.get('symbol'), str))
     social = {sym: value for sym, value in social.items() if symbols[sym] == 1}
     seen_ids = set()
     invalid = 0
@@ -691,6 +752,12 @@ def build():
         "coins": coins,
     }
     publish_snapshot(snapshot)
+    try:
+        orbit_health.record(snapshot, OUT_DIR, demo=PROFILE == 'demo-250-v1')
+    except (OSError, ValueError, TypeError):
+        # Publication succeeded; a private health-report failure must not claim
+        # that the old public snapshot was retained.
+        sys.stderr.write('ORBIT_HEALTH state=critical issues=health-report-failed\n')
     health = 'ok' if markets_status.get('ok') else 'degraded'
     sys.stderr.write(f"snapshot {health}: {len(coins)} coins, crypto={markets_status.get('error', 'ok')}, social={bool(social)}, macro={bool(macro)}, logos={logo_fetches}\n")
 
@@ -704,4 +771,8 @@ if __name__ == "__main__":
     except Exception as error:
         # No URL, upstream response or credential in the journal.
         sys.stderr.write(f'snapshot failed: {type(error).__name__}; previous snapshot retained.\n')
+        try:
+            orbit_health.record(load_previous(), OUT_DIR, demo=PROFILE == 'demo-250-v1', failure='collector-failed')
+        except Exception:
+            sys.stderr.write('ORBIT_HEALTH state=critical issues=health-report-failed\n')
         sys.exit(1)

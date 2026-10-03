@@ -19,6 +19,12 @@ def coin(cid="test", symbol="tst"):
 
 
 class BuilderTests(unittest.TestCase):
+    def setUp(self):
+        # Legacy miniature fixtures explicitly configure a one-asset universe.
+        context = patch.object(b, 'TOP', 1)
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_price_observation_is_preserved_with_timezone(self):
         c = coin()
         self.assertEqual(b.normalize_coin(c, {}, False)["last_updated"], "2026-01-01T00:00:00.123000+00:00")

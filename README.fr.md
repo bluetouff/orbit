@@ -11,6 +11,8 @@ Favoris et carte de marché crypto, par l0g Lab. Logiciel sous [licence MIT](LIC
 - Pour les cryptos : variations sur 1H, 24H, 7D et 30D ; taille des tuiles selon la performance, la capitalisation ou le volume.
 - Fiches de marché, dates des sources et états explicites lorsque les données sont anciennes ou indisponibles.
 - Interface FR/EN, navigation au clavier, import et export JSON locaux.
+- Vue liste avec recherche, tri et chiffres lisibles sur mobile ; symboles dans les tuiles assez grandes.
+- Référence statistique filtrée optionnelle, exclusions partielles sourcées et datées, comparaison des nombres de signaux.
 
 Orbit ne passe aucun ordre et ne connecte aucun portefeuille.
 
@@ -46,6 +48,9 @@ node --check web/app.js
 node --check web/i18n.js
 node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
+npm ci --ignore-scripts
+npx --no-install playwright install chromium
+npm run test:browser
 ```
 
 Les suites navigateur utilisent une installation existante de Playwright : `tests/browser.cjs`, `tests/experience-browser.cjs`, `tests/crypto-only-browser.cjs`, `tests/docs-browser.cjs` et `tests/outage-browser.cjs`. Démarrer l’aperçu auparavant. La suite crypto vérifie aussi l’exclusion des anciens tokens. Les données synthétiques sont réservées aux tests isolés des erreurs et des protections.
@@ -101,3 +106,15 @@ couleur de performance ni signal. L’ancien profil conserve son seuil de
 3 minutes. Le déploiement exige au moins 90 % de prix récents, Bitcoin compris,
 et au moins 20 actifs. Les favoris hors du nouvel univers restent enregistrés
 et sont signalés comme indisponibles.
+
+La suite `npm run test:browser`, exécutée en CI, couvre FR/EN, quatre largeurs
+d’écran, recherche et tri, références statistiques, navigation clavier,
+import/export, persistance et reprise après panne. Ses données synthétiques
+restent isolées dans le processus de test et ne sont jamais publiées. Playwright
+est uniquement une dépendance de développement verrouillée.
+
+Le collecteur contrôle la couverture avant chaque publication. Un recul de plus
+de 10 % du nombre d’actifs, un univers trop petit ou une couverture Demo
+insuffisante conserve le dernier univers et signale un échec. Le rapport de santé
+privé et les alertes de quota dans le journal sont décrits dans le
+[runbook](RUNBOOK.md#runtime-health-coverage-and-budget-alerts).

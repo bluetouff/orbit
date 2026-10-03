@@ -22,5 +22,7 @@ web/logos/
 .coingecko-budget.json
 .coingecko-budget.lock
 collection.profile
+.orbit-health.json
+test-results/
 .kraken-xstocks.json
 .kraken-xstocks.lock

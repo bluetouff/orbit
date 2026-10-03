@@ -8,6 +8,11 @@ from test_builder import b, v, coin
 
 
 class ProviderBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        context = patch.object(b, 'TOP', 2)
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_tokens_are_rejected_even_when_legacy_metadata_is_incomplete(self):
         variants = [{'asset_type': 'xstock'}, {'price_source': 'kraken'},
                     {'id': 'apple-xstock'}, {'name': 'Apple xStock'}]

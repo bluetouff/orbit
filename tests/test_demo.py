@@ -94,7 +94,8 @@ class DemoTests(unittest.TestCase):
 
     def test_activation_fetches_despite_old_access_refusal_and_publishes_policy(self):
         old = {'coins': [coin()], 'status': {'coingecko_markets': {'ok': False, 'http_status': 403, 'retry_at': '2099-01-01T00:00:00Z'}}}
-        with patch.object(b, 'PROFILE', 'demo-250-v1'), patch.object(b, 'LOGO_DIR', str(self.root)), patch.object(b, 'load_previous', return_value=old), patch.object(b, 'get_markets', return_value=[coin()]) as market, patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=(None, {'ok': False})), patch.object(b, 'cg', return_value={}), patch.object(b, 'cache_logo', return_value=False):
+        markets = [coin('bitcoin' if i == 0 else f'asset-{i}') for i in range(20)]
+        with patch.object(b.time, 'time', return_value=1767225601), patch.object(b, 'PROFILE', 'demo-250-v1'), patch.object(b, 'LOGO_DIR', str(self.root)), patch.object(b, 'load_previous', return_value=old), patch.object(b, 'get_markets', return_value=markets) as market, patch.object(b, 'get_social', return_value=({}, {'ok': False})), patch.object(b, 'get_macro', return_value=(None, {'ok': False})), patch.object(b, 'cg', return_value={}), patch.object(b, 'cache_logo', return_value=False):
             b.build()
         market.assert_called_once()
         data = json.loads((self.root / 'orbit.json').read_text())
@@ -125,7 +126,7 @@ class DemoTests(unittest.TestCase):
         def request(path, params):
             requests.append((path, params))
             if path == 'global': return {'data': {'total_market_cap': {'usd': 1}}}
-            return [dict(coin(f'asset-{i}'), last_updated=stamp()) for i in range(250)]
+            return [dict(coin('bitcoin' if i == 0 else f'asset-{i}'), last_updated=stamp()) for i in range(250)]
         with patch.object(b, 'PROFILE', 'demo-250-v1'), patch.object(b, 'TOP', 250), patch.object(b, 'MARKETS_REFRESH_SEC', 300), patch.object(b, 'GLOBAL_REFRESH_SEC', 3600), patch.object(b, 'LOGO_DIR', str(self.root)), patch.object(b, 'LOGO_FETCH_PER_RUN', 0), patch.object(b, 'LUNAR_KEY', ''), patch.object(b, 'FRED_KEY', ''), patch.object(b.time, 'time', side_effect=lambda: clock[0]), patch.object(b, 'utc_now', side_effect=stamp), patch.object(b, 'cg', side_effect=request):
             b.build()
             self.assertEqual([r[0] for r in requests], ['coins/markets', 'global'])

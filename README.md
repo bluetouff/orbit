@@ -244,3 +244,33 @@ No price is fabricated or redated. Release validation requires a new successful
 collection and at least 90% of the returned prices dated within 10 minutes,
 including Bitcoin, with at least 20 assets. Each older or undated price remains
 unavailable in the interface even when that coverage check passes.
+
+## List view and optional statistical reference
+
+Map/List preserves the current watchlist, horizon and filter. List search is
+local to the displayed selection; sorting is explicit, unavailable values sort
+last, and mobile rows retain price, cap and volume. Divergence filtering is
+disabled outside 24H and resets to all assets when the horizon changes.
+
+The optional screened reference excludes a reviewed, partial list of stablecoin
+and tokenized-asset IDs. Unknown IDs stay unclassified. The sources, review date,
+excluded assets and signal counts under both references are visible in the
+composition details. All assets remains the default; neither method has
+predictive validation. See the bilingual user guide for the primary sources.
+
+The collector validates coverage before each market publication and rejects
+non-finite JSON. Local operational health and budget projections are described
+in [the runbook](RUNBOOK.md#runtime-health-coverage-and-budget-alerts).
+
+The deterministic CI browser suite requires only a loopback preview and isolated
+fixtures, with no provider traffic:
+
+```bash
+npm ci --ignore-scripts
+npx --no-install playwright install chromium
+npm run test:browser
+```
+
+Playwright is a pinned development dependency only. No dependency is added to
+the browser application or production collector. Failure screenshots are kept
+as CI artifacts for seven days.

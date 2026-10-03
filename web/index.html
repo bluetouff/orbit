@@ -30,6 +30,7 @@
     <div class="toolbar" id="toolbar">
       <div class="segments" id="viewControl" role="group" aria-label="View"><button data-view="fav" aria-pressed="true">Watchlist <span id="watchCount">0</span></button><button data-view="market" aria-pressed="false">Crypto</button></div>
       <div class="segments periods" id="periodControl" aria-label="Performance period"><button data-tf="1h">1H</button><button data-tf="24h">24H</button><button data-tf="7d">7D</button><button data-tf="30d">30D</button></div>
+      <div class="segments layout-control" role="group" aria-label="Display"><button data-layout="map" aria-pressed="true">Map</button><button data-layout="list" aria-pressed="false">List</button></div>
       <label class="select-label">Show<select id="filterSelect"><option value="all">All assets</option><option value="divergence">Divergences</option><option value="anomaly">Anomalies</option><option value="gainers">Gainers</option><option value="losers">Losers</option></select></label>
       <label class="select-label">Size<select id="sizeSelect"><option value="perf">Performance</option><option value="market_cap">Market cap</option><option value="total_volume">Volume</option></select></label>
       <button id="signalsToggle" class="signals-toggle" aria-controls="signalsPanel" aria-expanded="true"><img class="icon" src="icons/panel-right.svg" alt=""><span id="signalsToggleLabel">Signals</span><span id="signalCount">0</span></button>
@@ -52,6 +53,9 @@
     </section>
     <section class="map-section" aria-label="Asset performance heatmap">
       <div class="map-heading"><div><h2 id="mapTitle">Watchlist</h2><span id="mapSummary"></span></div><span id="marketAge" class="source-age">Waiting for data</span></div>
+      <div class="list-tools" id="listTools" hidden><label class="search-box"><img class="icon" src="icons/search.svg" alt=""><input id="assetSearch" type="search" maxlength="80" placeholder="Search this selection" aria-label="Search this selection" autocomplete="off" spellcheck="false"></label><label class="select-label">Sort<select id="sortSelect"><option value="rank">Market rank</option><option value="name">Name</option><option value="performance">Performance</option><option value="market_cap">Market cap</option><option value="total_volume">Volume</option><option value="signals">Signals</option></select></label></div>
+      <div id="assetList" class="asset-list" hidden><table><caption class="sr-only">Assets in this selection</caption><thead><tr><th scope="col">Asset</th><th scope="col" class="list-price">Price</th><th scope="col" id="returnColumn">24H</th><th scope="col" class="list-cap">Market cap</th><th scope="col" class="list-volume">24H volume</th><th scope="col">Signals</th></tr></thead><tbody id="assetRows"></tbody></table><p id="listEmpty" class="empty-description" role="status" hidden>No matching assets</p></div>
+      <p id="filterNotice" class="filter-notice" role="status" hidden></p>
       <div id="stage">
         <canvas id="map" aria-hidden="true"></canvas>
         <div id="tileButtons" class="tile-buttons" aria-label="Assets"></div>
@@ -63,6 +67,8 @@
     <aside id="signalsPanel" class="signals-panel" aria-labelledby="signalsTitle">
       <div class="panel-heading"><div><p class="eyebrow">In your watchlist</p><h2 id="signalsTitle">Signals <span id="panelCount">0</span></h2></div><button id="closeSignals" class="icon-button" title="Hide signals" aria-label="Hide signals"><img class="icon" src="icons/x.svg" alt=""></button></div>
       <p id="signalContext" class="panel-context"></p>
+      <label class="select-label reference-control">Reference<select id="referenceSelect"><option value="all">All assets</option><option value="screened">Screened reference</option></select></label>
+      <details class="reference-details"><summary>Reference composition</summary><p id="referenceNote"></p><div id="referenceSources"></div><p id="referenceComparison"></p><ul id="referenceExcluded"></ul></details>
       <section id="marketContext" class="market-context" aria-label="Market context"></section>
       <div id="signalList" class="signal-list"></div>
       <div class="data-status"><h3>Data sources</h3><div id="sourceStatus"></div><button id="methodBtn" class="text-button">How signals are calculated <img class="icon" src="icons/external-link.svg" alt=""></button></div>
@@ -89,7 +95,8 @@
   <div class="dialog-heading"><h2 id="methodTitle">Signal methodology</h2><button class="icon-button" data-close title="Close" aria-label="Close"><img class="icon" src="icons/x.svg" alt=""></button></div>
   <div class="prose">
     <h3>A crypto reference</h3><p>Crypto assets with a valid return in the current market snapshot form the reference, including stablecoins. Changing your watchlist or filtering the map does not change this reference. At least 20 valid observations are required.</p>
-    <h3>Snapshot context</h3><p>The market median is the middle return of the usable reference, not a market-cap-weighted index. Breadth counts rising, unchanged and falling assets over the selected period, with equal weight per asset. Stablecoins and correlated tokens remain included; this is not a sector-matched comparison.</p>
+    <p>The optional screened reference excludes identified stablecoins and tokenized assets from statistics and signals. Its dated list is partial: an unlisted asset is not classified. Prices remain visible. Compare reference composition before interpreting a changed score; neither reference is a forecast.</p>
+    <h3>Snapshot context</h3><p>The market median is the middle return of the usable reference, not a market-cap-weighted index. Breadth counts rising, unchanged and falling assets over the selected period, with equal weight per asset. The default reference includes stablecoins and correlated tokens; neither reference is a sector-matched comparison.</p>
     <h3>Relative comparisons</h3><p>Against BTC: 100 × ((100 + asset return %) / (100 + BTC return %) - 1), for the same period. Against the median: asset return minus median return, in percentage points. These comparisons add context, not independent confirmations or predictions.</p>
     <p>Missing or invalid BTC returns suppress the relative comparison, as does a BTC return of -100%. Supplied observation times must be current and at most one minute apart. Collection-only snapshots remain explicitly labelled: synchronisation cannot be verified without observation times.</p>
     <h3>Anomalies</h3><p>A return more than two population standard deviations above or below the reference mean is highlighted. A 24-hour volume-to-market-cap ratio is also highlighted above two standard deviations, after a log10(1 + 1000 × ratio) transformation.</p>

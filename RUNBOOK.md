@@ -45,6 +45,7 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin orbit
 sudo install -d -o orbit -g orbit -m 755 /var/lib/orbit /var/lib/orbit/logos
 sudo install -d -m 755 /opt/orbit
 sudo install -o root -g root -m 0755 build_snapshot.py /opt/orbit/
+sudo install -o root -g root -m 0644 orbit_health.py /opt/orbit/
 sudo install -o root -g root -m 0755 scripts/validate_snapshot.py /opt/orbit/validate_snapshot.py
 
 sudo install -d -m 755 /var/www/html/orbit
@@ -75,7 +76,17 @@ sudo chown orbit:orbit /etc/orbit/orbit.env && sudo chmod 640 /etc/orbit/orbit.e
 sudoedit /etc/orbit/orbit.env       # CG_API_TIER/CG_API_KEY, LUNARCRUSH_API_KEY, FRED_API_KEY
 ```
 
-Without any key, the app already works through CoinGecko's public API.
+Choose the provider tier and supported profile before the first collection.
+For a Demo key, create the profile before starting the service or timer:
+
+```bash
+printf 'demo-250-v1\n' | sudo tee /opt/orbit/collection.profile >/dev/null
+sudo chown root:root /opt/orbit/collection.profile
+sudo chmod 644 /opt/orbit/collection.profile
+```
+
+Unauthenticated CoinGecko availability is provider-dependent. Do not assume
+that the legacy one-minute settings fit a Demo budget.
 LunarCrush supplies separate social context (Galaxy Score); FRED supplies macro
 observations with publication dates. Neither source changes the market signal
 reference or substitutes for missing crypto returns.
@@ -85,7 +96,9 @@ reference or substitutes for missing crypto returns.
 ## 3. First Manual Build
 
 ```bash
-sudo -u orbit ORBIT_OUT_DIR=/var/lib/orbit /usr/bin/python3 /opt/orbit/build_snapshot.py
+sudo install -o root -g root -m 0644 deploy/orbit-snapshot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start orbit-snapshot.service
 ls -lh /var/lib/orbit/orbit.json /var/lib/orbit/logos | head
 /usr/bin/python3 /opt/orbit/validate_snapshot.py /var/lib/orbit/orbit.json
 ```
@@ -427,3 +440,38 @@ within 600 seconds. Global context expires after 3720 seconds. Arbitrary `ttl`
 values in a snapshot cannot extend these fixed policy limits. Failed feeds
 remain unavailable immediately, regardless of age. Old quotes keep their dates
 and are never used for colors, returns, filters or signals.
+
+## Runtime health, coverage and budget alerts
+
+Every market refresh checks distinct normalized assets before either public
+write. The minimum is 20 (or a smaller explicitly configured legacy universe),
+and at least 90% of the previous universe, bounded by the configured target.
+Demo also requires at least 90% recent quotes and current Bitcoin. A failed
+check retains the previous full universe with its original dates and marks the
+market feed unavailable. Never clear the previous snapshot to bypass this guard;
+investigate the provider response or an intentional universe change.
+
+The collector writes `/var/lib/orbit/.orbit-health.json` with mode 0600. It
+contains operational counts, times and fixed issue codes. `ORBIT_HEALTH`
+journal entries appear on state/issue changes and recovery. This provides local
+alerts; no email, webhook or third-party notification is configured.
+
+```bash
+sudo -u orbit python3 /opt/orbit/orbit_health.py
+journalctl -u orbit-snapshot.service --grep=ORBIT_HEALTH --since=today --no-pager
+```
+
+The offline command recomputes freshness at invocation time and exits 0 for
+healthy, 1 for warning, 2 for critical. An existing monitor can poll it without
+provider requests. A stored report alone does not prove that a stopped collector
+is healthy; use this command or public freshness checks.
+
+Budget projection adds scheduled requests remaining in the current UTC month
+to recorded reservations. Above 9,500 projected requests it warns about low
+margin; at 10,000 projected requests it warns of exhaustion risk. The hard cap
+remains 10,000. Missing, corrupt or future-dated ledgers are unknown, never zero.
+The projection excludes manual future requests and cannot know requests made
+elsewhere or before ledger creation. The five-minute cadence is unchanged.
+
+`orbit_health.py` is backed up and restored with the collector. Private ledger
+and health reports are not copied into public release assets.
